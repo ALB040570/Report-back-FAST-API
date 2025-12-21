@@ -1,3 +1,4 @@
+import os
 from typing import Any, Dict, List
 
 import json
@@ -6,6 +7,8 @@ import requests
 
 from app.models.filters import Filters
 from app.models.remote_source import RemoteSource
+
+SERVICE360_BASE_URL = os.getenv("SERVICE360_BASE_URL", "http://45.8.116.32")
 
 
 def _build_mock_records(remote_source: RemoteSource, filters: Filters) -> List[Dict[str, Any]]:
@@ -43,7 +46,19 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
 
     # 1. Базовые поля источника
     method = (remote_source.method or "POST").upper()
-    url = remote_source.url
+    url = (remote_source.url or "").strip()
+    base_url = SERVICE360_BASE_URL.rstrip("/")
+
+    if not url:
+        return []
+    if url.startswith("mock://"):
+        return _build_mock_records(remote_source, Filters())
+    if url.startswith("http://") or url.startswith("https://"):
+        full_url = url
+    elif url.startswith("/"):
+        full_url = f"{base_url}{url}"
+    else:
+        full_url = f"{base_url}/{url.lstrip('/')}"
     headers = remote_source.headers or {}
 
     # 2. Формируем тело запроса
@@ -58,22 +73,25 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
             body = remote_source.rawBody
 
     # 3. HTTP-запрос к удалённому источнику
-    if method == "GET":
-        response = requests.get(
-            url,
-            headers=headers,
-            params=body if isinstance(body, dict) else None,
-            timeout=30,
-        )
-    else:
-        # Для наших сервисов обычный вариант — POST с JSON-телом
-        json_body = body if isinstance(body, (dict, list)) else None
-        response = requests.post(
-            url,
-            headers=headers,
-            json=json_body,
-            timeout=30,
-        )
+    try:
+        if method == "GET":
+            response = requests.get(
+                full_url,
+                headers=headers,
+                params=body if isinstance(body, dict) else None,
+                timeout=30,
+            )
+        else:
+            # Для наших сервисов обычный вариант — POST с JSON-телом
+            json_body = body if isinstance(body, (dict, list)) else None
+            response = requests.post(
+                full_url,
+                headers=headers,
+                json=json_body,
+                timeout=30,
+            )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Failed to load remote source: {exc}") from exc
 
     response.raise_for_status()
     data = response.json()
@@ -84,11 +102,14 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
         if isinstance(result, dict):
             records = result.get("records")
             if isinstance(records, list):
+                print(f"[load_records] URL={full_url}, records={len(records)}")
                 return records
 
     # 5. Fallback: если API вернул просто список
     if isinstance(data, list):
+        print(f"[load_records] URL={full_url}, records={len(data)}")
         return data
 
     # Если формат неожиданный — пока возвращаем пустой список
+    print(f"[load_records] URL={full_url}, records=0")
     return []
