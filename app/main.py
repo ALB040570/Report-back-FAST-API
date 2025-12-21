@@ -1,7 +1,12 @@
 from typing import Any, Dict
 
 from fastapi import FastAPI
-from pydantic import BaseModel
+
+from app.models.view_request import ViewRequest
+from app.models.view import ChartConfig, ViewResponse
+from app.services.data_source_client import load_records
+from app.services.view_service import build_view
+
 
 app = FastAPI(
     title="Report Back FastAPI",
@@ -11,36 +16,35 @@ app = FastAPI(
 
 
 @app.get("/health", tags=["system"])
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     return {"status": "ok"}
 
 
-class TestViewRequest(BaseModel):
-    message: str | None = "test"
-
-
-class TestViewResponse(BaseModel):
-    view: Dict[str, Any]
-
-
-@app.post("/api/report/view/test", response_model=TestViewResponse, tags=["report"])
-async def build_test_view(payload: TestViewRequest):
+@app.post("/api/report/view", response_model=ViewResponse, tags=["report"])
+async def build_report_view(payload: ViewRequest) -> ViewResponse:
     """
-    Временный тестовый endpoint для проверки, что бэкенд жив.
-    Пока возвращает заглушку view.
+    Основной endpoint для конструктора дашбордов.
+    1. Загружает сырые записи из remoteSource.
+    2. Строит простое представление (pivot) на их основе.
+    3. Возвращает view + простейший chartConfig.
     """
-    return TestViewResponse(
-        view={
-            "columns": [
-                {"key": "col1", "label": "Column 1"},
-                {"key": "col2", "label": "Column 2"},
-            ],
-            "rows": [
-                {"key": "row1", "cells": {"col1": "Hello", "col2": "World"}},
-                {"key": "row2", "cells": {"col1": "FastAPI", "col2": "is alive"}},
-            ],
-            "meta": {
-                "message": payload.message or "no message",
-            },
-        }
+    # 1. Загружаем записи из удалённого источника
+    records = load_records(payload.remoteSource)
+
+    # 2. Строим pivot-представление (пока без агрегатов, черновой вариант)
+    pivot_view = build_view(records, payload.snapshot)
+
+    # 3. Строим простейший chartConfig-заглушку
+    chart_config = ChartConfig(
+        type="table",
+        data={
+            "rowCount": len(pivot_view.get("rows", [])),
+            "columnCount": len(pivot_view.get("columns", [])),
+        },
+        options={},
+    )
+
+    return ViewResponse(
+        view=pivot_view,
+        chart=chart_config,
     )
