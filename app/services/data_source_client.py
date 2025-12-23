@@ -71,6 +71,9 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
         except Exception:
             # Если не получилось распарсить, отправим как есть
             body = remote_source.rawBody
+    if isinstance(body, dict):
+        body = {**body}
+        body.pop("__joins", None)
 
     # 3. HTTP-запрос к удалённому источнику
     try:

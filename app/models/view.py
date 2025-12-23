@@ -14,12 +14,14 @@ class ViewColumn(BaseModel):
     key: str
     label: Optional[str] = None
     width: Optional[int] = None
+    values: Optional[List[Any]] = None
     formatting: Optional[List[ConditionalFormattingRule]] = None
 
 
 class ViewRow(BaseModel):
     key: str
     label: Optional[str] = None
+    values: Optional[List[Any]] = None
     cells: List[ViewCell]
 
 
@@ -49,3 +51,4 @@ class ViewResponse(BaseModel):
     """
     view: PivotView
     chart: Optional[ChartConfig] = None
+    debug: Optional[Dict[str, Any]] = None

@@ -1,24 +1,131 @@
 import ast
 import functools
+import json
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 
 
-def _normalize_part(value: Any) -> str:
+def _normalize_value_for_key(value: Any) -> str:
     if value is None:
         return ""
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            return ""
     return str(value)
+
+
+def _format_label_value(value: Any) -> str:
+    if value is None or value == "":
+        return "—"
+    return str(value)
+
+
+DATE_PART_MARKER = "__date_part__"
+MONTH_LABELS = [
+    "Январь",
+    "Февраль",
+    "Март",
+    "Апрель",
+    "Май",
+    "Июнь",
+    "Июль",
+    "Август",
+    "Сентябрь",
+    "Октябрь",
+    "Ноябрь",
+    "Декабрь",
+]
+
+
+def _parse_date_part_key(key: str | None) -> Dict[str, str] | None:
+    if not key or not isinstance(key, str):
+        return None
+    index = key.rfind(DATE_PART_MARKER)
+    if index == -1:
+        return None
+    field_key = key[:index]
+    part = key[index + len(DATE_PART_MARKER) :]
+    if not field_key or part not in {"year", "month", "day"}:
+        return None
+    return {"field_key": field_key, "part": part}
+
+
+def _parse_date_input(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc)
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if "." in text:
+        try:
+            day, month, year = text.split(".")
+            iso_string = f"{year}-{month}-{day}T00:00:00+00:00"
+            return datetime.fromisoformat(iso_string)
+        except ValueError:
+            pass
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _resolve_date_part_value(value: Any, part: str) -> str | None:
+    parsed = _parse_date_input(value)
+    if not parsed:
+        return None
+    if part == "year":
+        return str(parsed.year)
+    if part == "month":
+        month_index = parsed.month - 1
+        numeric = f"{parsed.month:02d}"
+        label = MONTH_LABELS[month_index] if 0 <= month_index < len(MONTH_LABELS) else ""
+        return f"{numeric} — {label}" if label else numeric
+    if part == "day":
+        return f"{parsed.day:02d}"
+    return None
+
+
+def _resolve_record_value_base(record: Dict[str, Any], key: str | None) -> Any:
+    if not record or not key:
+        return None
+    return record.get(key)
 
 
 def _build_dimension_label(values: Tuple[Any, ...], has_fields: bool) -> str:
     if not has_fields:
         return "Все записи"
-    return " / ".join(_normalize_part(value) for value in values)
+    return " / ".join(_format_label_value(value) for value in values)
 
 
-def _build_dimension_key(values: Tuple[Any, ...], has_fields: bool) -> str:
-    if not has_fields:
+def _build_dimension_key(values: Tuple[Any, ...], field_keys: List[str]) -> str:
+    if not field_keys:
         return "__all__"
-    return " / ".join(_normalize_part(value) for value in values)
+    parts = []
+    for field_key, value in zip(field_keys, values):
+        normalized = _normalize_value_for_key(value)
+        parts.append(f"{field_key}:{normalized}")
+    return "|".join(parts) if parts else "__all__"
+
+
+def _resolve_record_value(record: Dict[str, Any], key: str | None) -> Any:
+    if not record or not key:
+        return None
+    meta = _parse_date_part_key(key)
+    if meta:
+        base_value = _resolve_record_value_base(record, meta["field_key"])
+        return _resolve_date_part_value(base_value, meta["part"])
+    return _resolve_record_value_base(record, key)
 
 
 def _create_bucket() -> Dict[str, Any]:
@@ -236,7 +343,7 @@ def _ensure_row_node(
         "path": prefix,
         "field_key": field_key,
         "value": value,
-        "label": _normalize_part(value),
+        "label": _format_label_value(value),
         "depth": depth,
         "children": [],
         "order": len(nodes),
@@ -456,32 +563,38 @@ def build_pivot_view(records: list[dict], snapshot: dict) -> dict:
     if not column_fields and not column_order:
         column_order.append(tuple())
         column_index[tuple()] = {
-            "key": _build_dimension_key(tuple(), False),
+            "key": _build_dimension_key(tuple(), []),
             "label": _build_dimension_label(tuple(), False),
+            "values": [],
         }
 
     if not row_fields and not row_order:
         row_order.append(tuple())
         row_index[tuple()] = {
-            "key": _build_dimension_key(tuple(), False),
+            "key": _build_dimension_key(tuple(), []),
             "label": _build_dimension_label(tuple(), False),
+            "values": [],
         }
 
     for record in records or []:
-        row_key = tuple(record.get(field) for field in row_fields)
+        row_values = [_resolve_record_value(record, field) for field in row_fields]
+        row_key = tuple(_normalize_value_for_key(value) for value in row_values)
         if row_key not in row_index:
             row_order.append(row_key)
             row_index[row_key] = {
-                "key": _build_dimension_key(row_key, bool(row_fields)),
-                "label": _build_dimension_label(row_key, bool(row_fields)),
+                "key": _build_dimension_key(row_values, row_fields),
+                "label": _build_dimension_label(tuple(row_values), bool(row_fields)),
+                "values": list(row_values),
             }
 
-        column_key = tuple(record.get(field) for field in column_fields)
+        column_values = [_resolve_record_value(record, field) for field in column_fields]
+        column_key = tuple(_normalize_value_for_key(value) for value in column_values)
         if column_key not in column_index:
             column_order.append(column_key)
             column_index[column_key] = {
-                "key": _build_dimension_key(column_key, bool(column_fields)),
-                "label": _build_dimension_label(column_key, bool(column_fields)),
+                "key": _build_dimension_key(column_values, column_fields),
+                "label": _build_dimension_label(tuple(column_values), bool(column_fields)),
+                "values": list(column_values),
             }
 
         if row_key not in cell_buckets:
@@ -497,7 +610,7 @@ def build_pivot_view(records: list[dict], snapshot: dict) -> dict:
                     row_roots,
                     prefix,
                     field_key,
-                    row_key[depth] if depth < len(row_key) else None,
+                    row_values[depth] if depth < len(row_values) else None,
                     depth,
                 )
                 if prefix not in row_prefix_buckets:
@@ -507,7 +620,7 @@ def build_pivot_view(records: list[dict], snapshot: dict) -> dict:
                     if bucket is None:
                         bucket = _create_bucket()
                         row_prefix_buckets[prefix][metric["key"]] = bucket
-                    _update_bucket(bucket, record.get(metric["source_key"]))
+                    _update_bucket(bucket, _resolve_record_value(record, metric["source_key"]))
 
         if column_fields:
             for depth, _field_key in enumerate(column_fields):
@@ -519,7 +632,7 @@ def build_pivot_view(records: list[dict], snapshot: dict) -> dict:
                     if bucket is None:
                         bucket = _create_bucket()
                         column_prefix_buckets[prefix][metric["key"]] = bucket
-                    _update_bucket(bucket, record.get(metric["source_key"]))
+                    _update_bucket(bucket, _resolve_record_value(record, metric["source_key"]))
 
         for metric in base_metrics:
             metric_key = metric["key"]
@@ -527,13 +640,13 @@ def build_pivot_view(records: list[dict], snapshot: dict) -> dict:
             if bucket is None:
                 bucket = _create_bucket()
                 cell_buckets[row_key][column_key][metric_key] = bucket
-            _update_bucket(bucket, record.get(metric["source_key"]))
+            _update_bucket(bucket, _resolve_record_value(record, metric["source_key"]))
 
             total_bucket = total_buckets.get(metric_key)
             if total_bucket is None:
                 total_bucket = _create_bucket()
                 total_buckets[metric_key] = total_bucket
-            _update_bucket(total_bucket, record.get(metric["source_key"]))
+            _update_bucket(total_bucket, _resolve_record_value(record, metric["source_key"]))
 
     if row_fields:
         row_prefix_totals = _finalize_prefix_totals(row_prefix_buckets, metrics)
@@ -582,7 +695,11 @@ def build_pivot_view(records: list[dict], snapshot: dict) -> dict:
                 "expression": metric["expression"],
             }
             column_rules = _collect_column_rules(entry, rules)
-            column_payload = {"key": entry["key"], "label": entry["label"]}
+            column_payload = {
+                "key": entry["key"],
+                "label": entry["label"],
+                "values": column_meta.get("values", []),
+            }
             if column_rules:
                 column_payload["formatting"] = column_rules
             columns_result.append(column_payload)
@@ -626,6 +743,7 @@ def build_pivot_view(records: list[dict], snapshot: dict) -> dict:
         rows_result_map[row_key] = {
             "key": row_meta["key"],
             "label": row_meta["label"],
+            "values": row_meta.get("values", []),
             "cells": cells,
         }
 
