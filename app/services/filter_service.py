@@ -330,6 +330,8 @@ def _infer_field_type(values: List[Any]) -> str:
 
 
 def _resolve_meta_type(field_meta: Dict[str, Any], key: str, values: List[Any]) -> tuple[str, str]:
+    if key and DATE_PART_MARKER in key:
+        return "string", "default"
     meta_type = _resolve_field_type_from_meta(field_meta, key)
     if meta_type:
         if meta_type == "date":

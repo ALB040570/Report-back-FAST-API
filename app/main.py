@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.models.view_request import ViewRequest
 from app.models.view import ChartConfig, ViewResponse
 from app.services.data_source_client import load_records
+from app.services.detail_service import build_details
 from app.services.filter_service import apply_filters, collect_filter_options
 from app.services.join_service import apply_joins, resolve_joins
 from app.services.record_cache import get_cached_records, set_cached_records
@@ -165,4 +166,53 @@ async def build_report_filters(payload: ViewRequest, limit: int = 200) -> Dict[s
         if join_debug:
             debug["joins"] = join_debug
         response["debug"] = debug
+    return response
+
+
+@app.post("/api/report/details", tags=["report"])
+async def build_report_details(payload: Dict[str, Any]) -> Dict[str, Any]:
+    view_payload = ViewRequest(**payload)
+    limit = payload.get("limit") if isinstance(payload, dict) else None
+    offset = payload.get("offset") if isinstance(payload, dict) else None
+
+    try:
+        limit = int(limit) if limit is not None else 200
+    except (TypeError, ValueError):
+        limit = 200
+    try:
+        offset = int(offset) if offset is not None else 0
+    except (TypeError, ValueError):
+        offset = 0
+
+    joins = await resolve_joins(view_payload.remoteSource)
+    cache_key = _build_records_cache_key(view_payload.templateId, view_payload.remoteSource, joins)
+    joined_records = get_cached_records(cache_key)
+    join_debug: Dict[str, Any] = {}
+    cache_hit = joined_records is not None
+    if joined_records is None:
+        records = load_records(view_payload.remoteSource)
+        joined_records, join_debug = await apply_joins(
+            records,
+            view_payload.remoteSource,
+            joins_override=joins,
+        )
+        if joined_records:
+            set_cached_records(cache_key, joined_records)
+
+    response, debug_payload = build_details(
+        joined_records or [],
+        view_payload.snapshot,
+        view_payload.filters,
+        payload,
+        limit=limit,
+        offset=offset,
+        debug=bool(os.getenv("REPORT_DEBUG_FILTERS")),
+    )
+
+    if os.getenv("REPORT_DEBUG_FILTERS"):
+        debug_payload["cacheHit"] = cache_hit
+        if join_debug:
+            debug_payload["joins"] = join_debug
+        response["debug"] = debug_payload
+
     return response
