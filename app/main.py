@@ -1,5 +1,3 @@
-import hashlib
-import json
 import os
 from typing import Any, Dict
 
@@ -12,7 +10,7 @@ from app.services.data_source_client import load_records
 from app.services.detail_service import build_details
 from app.services.filter_service import apply_filters, collect_filter_options
 from app.services.join_service import apply_joins, resolve_joins
-from app.services.record_cache import get_cached_records, set_cached_records
+from app.services.record_cache import build_records_cache_key, get_cached_records, set_cached_records
 from app.services.view_service import build_view
 
 
@@ -27,32 +25,12 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://192.168.1.81:5173",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-def _safe_json_payload(value: Any) -> Any:
-    if isinstance(value, (dict, list, str, int, float, bool)) or value is None:
-        return value
-    return str(value)
-
-
-def _build_records_cache_key(
-    template_id: str,
-    remote_source: Any,
-    joins: Any,
-) -> str:
-    cache_template_id = template_id or getattr(remote_source, "id", None) or getattr(remote_source, "remoteId", None) or ""
-    payload = {
-        "templateId": cache_template_id,
-        "body": _safe_json_payload(getattr(remote_source, "body", None) or getattr(remote_source, "rawBody", None)),
-        "joins": _safe_json_payload(joins),
-    }
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @app.get("/health", tags=["system"])
@@ -118,7 +96,7 @@ async def build_report_filters(payload: ViewRequest, limit: int = 200) -> Dict[s
     Возвращает доступные значения для каждого ключа фильтра.
     """
     joins = await resolve_joins(payload.remoteSource)
-    cache_key = _build_records_cache_key(payload.templateId, payload.remoteSource, joins)
+    cache_key = build_records_cache_key(payload.templateId, payload.remoteSource, joins)
     joined_records = get_cached_records(cache_key)
     join_debug: Dict[str, Any] = {}
     cache_hit = joined_records is not None
@@ -185,7 +163,7 @@ async def build_report_details(payload: Dict[str, Any]) -> Dict[str, Any]:
         offset = 0
 
     joins = await resolve_joins(view_payload.remoteSource)
-    cache_key = _build_records_cache_key(view_payload.templateId, view_payload.remoteSource, joins)
+    cache_key = build_records_cache_key(view_payload.templateId, view_payload.remoteSource, joins)
     joined_records = get_cached_records(cache_key)
     join_debug: Dict[str, Any] = {}
     cache_hit = joined_records is not None
