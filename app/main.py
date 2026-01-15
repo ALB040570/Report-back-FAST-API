@@ -4,6 +4,7 @@ from typing import Any, Dict
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.batch import router as batch_router
 from app.models.view_request import ViewRequest
 from app.models.view import ChartConfig, ViewResponse
 from app.services.data_source_client import load_records
@@ -31,6 +32,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(batch_router)
 
 
 @app.get("/health", tags=["system"])

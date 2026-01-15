@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import json
-import requests
+from app.services.upstream_client import build_full_url, request_json
 
 
 from app.models.filters import Filters
@@ -201,12 +201,8 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
     is_mock = url.startswith("mock://")
     if is_mock:
         full_url = url
-    elif url.startswith("http://") or url.startswith("https://"):
-        full_url = url
-    elif url.startswith("/"):
-        full_url = f"{base_url}{url}"
     else:
-        full_url = f"{base_url}/{url.lstrip('/')}"
+        full_url = build_full_url(base_url, url)
     headers = remote_source.headers or {}
 
     # 2. Формируем тело запроса
@@ -220,27 +216,16 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
         if is_mock:
             records = _build_mock_records(remote_source, Filters())
         else:
-            try:
-                if method == "GET":
-                    response = requests.get(
-                        full_url,
-                        headers=headers,
-                        params=payload.body if isinstance(payload.body, dict) else None,
-                        timeout=30,
-                    )
-                else:
-                    json_body = payload.body if isinstance(payload.body, (dict, list)) else None
-                    response = requests.post(
-                        full_url,
-                        headers=headers,
-                        json=json_body,
-                        timeout=30,
-                    )
-            except requests.RequestException as exc:
-                raise RuntimeError(f"Failed to load remote source: {exc}") from exc
-
-            response.raise_for_status()
-            data = response.json()
+            json_body = payload.body if isinstance(payload.body, (dict, list)) else None
+            params = payload.body if (method == "GET" and isinstance(payload.body, dict)) else None
+            data = request_json(
+                method,
+                full_url,
+                headers=headers,
+                params=params,
+                json_body=json_body if method != "GET" else None,
+                timeout=30.0,
+            )
             records = _extract_records(data, full_url)
 
         _apply_request_metadata(records, payload.params)

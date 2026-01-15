@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-import requests
+from app.services.upstream_client import build_full_url, request_json
 
 SERVICE360_BASE_URL = os.getenv("SERVICE360_BASE_URL", "http://45.8.116.32")
 _SOURCE_CACHE_TTL = 300.0
@@ -42,12 +42,9 @@ def _parse_method_body(raw_body: Any) -> tuple[Any, Optional[str]]:
 
 
 def _fetch_source_records() -> List[Dict[str, Any]]:
-    base_url = SERVICE360_BASE_URL.rstrip("/")
-    url = f"{base_url}/dtj/api/report"
+    url = build_full_url(SERVICE360_BASE_URL, "/dtj/api/report")
     payload = {"method": "report/loadReportSource", "params": [0]}
-    response = requests.post(url, json=payload, timeout=30)
-    response.raise_for_status()
-    data = response.json()
+    data = request_json("POST", url, json_body=payload, timeout=30.0)
     if isinstance(data, dict):
         result = data.get("result") or data.get("data") or data
         if isinstance(result, dict):
