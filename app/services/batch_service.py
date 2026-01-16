@@ -140,15 +140,15 @@ async def process_job(job_id: str, store: JobStore) -> None:
                 break
 
             async with semaphore:
-            item_result = await _process_item(
-                job_id,
-                client,
-                params,
-                upstream_url=effective_upstream,
-                method=job.get("method"),
-                source_id=job.get("sourceId"),
-                meta=job.get("meta"),
-            )
+                item_result = await _process_item(
+                    job_id,
+                    client,
+                    params,
+                    upstream_url=effective_upstream,
+                    method=job.get("method"),
+                    source_id=job.get("sourceId"),
+                    meta=job.get("meta"),
+                )
             results[idx] = item_result
 
             async with lock:

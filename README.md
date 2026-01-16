@@ -51,7 +51,7 @@ REDIS_URL=redis://localhost:6379/0
 BATCH_CONCURRENCY=5
 BATCH_MAX_ITEMS=100
 BATCH_JOB_TTL_SECONDS=3600
-UPSTREAM_BASE_URL=http://localhost
+UPSTREAM_BASE_URL=http://45.8.116.32
 # UPSTREAM_URL=http://45.8.116.32/dtj/api/plan
 UPSTREAM_TIMEOUT=30
 UPSTREAM_ALLOWLIST=45.8.116.32
@@ -97,7 +97,7 @@ GET /batch/{job_id} — статус/результаты
 DELETE /batch/{job_id} — отмена
 
 Поле `endpoint` в POST /batch обязательно и определяет путь апстрима (например `/dtj/api/plan`).
-Если `endpoint` относительный — он будет склеен с `UPSTREAM_BASE_URL`.
+Если `endpoint` относительный — он будет склеен с `UPSTREAM_BASE_URL` (обязательно).
 Полный URL разрешён только при наличии `UPSTREAM_ALLOWLIST`.
 Если `endpoint` не задан, то используется `UPSTREAM_URL` только если он явно выставлен.
 

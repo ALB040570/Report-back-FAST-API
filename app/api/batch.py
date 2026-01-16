@@ -21,7 +21,10 @@ async def create_batch(payload: BatchRequest) -> BatchResponse:
         raise HTTPException(status_code=400, detail="endpoint is not allowed")
     if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
         if not settings.upstream_base_url:
-            raise HTTPException(status_code=400, detail="UPSTREAM_BASE_URL is required for relative endpoint")
+            raise HTTPException(
+                status_code=400,
+                detail="UPSTREAM_BASE_URL is required for relative endpoint (e.g. http://45.8.116.32)",
+            )
     if not payload.params:
         raise HTTPException(status_code=400, detail="params must be non-empty")
     if len(payload.params) > settings.batch_max_items:
