@@ -41,6 +41,14 @@ class DataSourceClientTests(unittest.TestCase):
         self.assertEqual(payloads[1].body["params"], {"date": "2026-01-01", "periodType": 12})
         self.assertEqual(payloads[1].params, {"date": "2026-01-01", "periodType": 12})
 
+    def test_build_request_payloads_params_list_scalar(self) -> None:
+        body = {"method": "data/loadEquipment", "params": [0]}
+        payloads = build_request_payloads(body)
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0].body["method"], "data/loadEquipment")
+        self.assertEqual(payloads[0].body["params"], [0])
+        self.assertIsNone(payloads[0].params)
+
 
 if __name__ == "__main__":
     unittest.main()

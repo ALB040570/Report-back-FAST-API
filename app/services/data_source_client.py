@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from app.models.filters import Filters
 from app.models.remote_source import RemoteSource
 
 SERVICE360_BASE_URL = os.getenv("SERVICE360_BASE_URL", "http://45.8.116.32")
+logger = logging.getLogger(__name__)
 
 _CAMEL_SPLIT_RE = re.compile(r"[^0-9A-Za-z]+")
 
@@ -60,6 +62,8 @@ def build_request_payloads(body: Any) -> List[RequestPayload]:
 
     params_list = body.get("params")
     if isinstance(params_list, list):
+        if any(not isinstance(entry, dict) for entry in params_list):
+            return [RequestPayload(body=body, params=None)]
         return _build_request_payloads_from_params(body, params_list)
 
     params = body.get("params")
@@ -164,6 +168,13 @@ def _extract_records(data: Any, full_url: str) -> List[Dict[str, Any]]:
             if isinstance(records, list):
                 print(f"[load_records] URL={full_url}, records={len(records)}")
                 return records
+        if isinstance(result, list):
+            print(f"[load_records] URL={full_url}, records={len(result)}")
+            return result
+        records = data.get("records")
+        if isinstance(records, list):
+            print(f"[load_records] URL={full_url}, records={len(records)}")
+            return records
 
     if isinstance(data, list):
         print(f"[load_records] URL={full_url}, records={len(data)}")
@@ -218,12 +229,20 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
         else:
             json_body = payload.body if isinstance(payload.body, (dict, list)) else None
             params = payload.body if (method == "GET" and isinstance(payload.body, dict)) else None
+            request_method = method
+            request_headers = dict(headers)
+            if method == "GET" and json_body is not None:
+                request_method = "POST"
+                params = None
+                request_headers.setdefault("X-HTTP-Method-Override", "GET")
+                request_headers.setdefault("Content-Type", "application/json")
+                logger.info("Using method override for GET with body", extra={"url": full_url})
             data = request_json(
-                method,
+                request_method,
                 full_url,
-                headers=headers,
+                headers=request_headers,
                 params=params,
-                json_body=json_body if method != "GET" else None,
+                json_body=json_body if request_method != "GET" else None,
                 timeout=30.0,
             )
             records = _extract_records(data, full_url)
