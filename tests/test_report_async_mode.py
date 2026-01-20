@@ -1,6 +1,7 @@
 import asyncio
 import os
 import unittest
+import logging
 
 import httpx
 import respx
@@ -63,10 +64,12 @@ class ReportAsyncModeTests(unittest.TestCase):
         )
         return router
 
-    async def _client_post(self, path: str, payload: dict) -> httpx.Response:
+    async def _client_post(
+        self, path: str, payload: dict, headers: dict | None = None
+    ) -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            return await client.post(path, json=payload)
+            return await client.post(path, json=payload, headers=headers)
 
     async def _client_get(self, path: str) -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -148,6 +151,59 @@ class ReportAsyncModeTests(unittest.TestCase):
             asyncio.run(run())
         finally:
             router.__exit__(None, None, None)
+
+    def test_async_mode_logs_request_id(self) -> None:
+        os.environ["ASYNC_REPORTS"] = "1"
+        os.environ["REPORT_JOB_MAX_CONCURRENCY"] = "1"
+        request_id = "req-async-123"
+        logger = logging.getLogger("app.services.report_job_service")
+        handler = _ListHandler()
+        previous_level = logger.level
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        router = self._mock_upstream()
+        try:
+            async def run() -> str:
+                response = await self._client_post(
+                    "/api/report/view", self._payload(), headers={"X-Request-ID": request_id}
+                )
+                self.assertEqual(response.status_code, 202)
+                job_id = response.json().get("job_id")
+                self.assertTrue(job_id)
+                for _ in range(30):
+                    status = await self._client_get(f"/api/report/jobs/{job_id}")
+                    payload = status.json()
+                    if payload.get("status") == "done":
+                        return job_id
+                    await asyncio.sleep(0.05)
+                self.fail("Job did not finish in time")
+                return ""
+
+            job_id = asyncio.run(run())
+            done_records = [record for record in handler.records if getattr(record, "status", None) == "done"]
+            if not done_records:
+                done_records = [
+                    record for record in handler.records if record.getMessage() == "Report job done"
+                ]
+            self.assertTrue(done_records, "Expected a 'done' report job log record")
+            record = done_records[-1]
+            self.assertEqual(getattr(record, "job_id", None), job_id)
+            self.assertEqual(getattr(record, "requestId", None), request_id)
+            self.assertEqual(getattr(record, "status", None), "done")
+            self.assertIsNotNone(getattr(record, "duration_ms", None))
+        finally:
+            router.__exit__(None, None, None)
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+
+
+class _ListHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
 
 
 if __name__ == "__main__":

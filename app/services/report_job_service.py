@@ -253,7 +253,10 @@ async def create_report_job(payload: Dict[str, Any], request_id: str | None = No
     }
     await store.set_job(job_id, job, ttl_seconds=settings.report_job_ttl_seconds)
     await store.enqueue_job(job_id)
-    logger.info("Report job queued", extra={"job_id": job_id, "requestId": request_id})
+    logger.info(
+        "Report job queued",
+        extra={"job_id": job_id, "requestId": request_id, "status": "queued"},
+    )
     await ensure_report_workers()
     return job_id
 
@@ -305,18 +308,32 @@ async def _worker_loop() -> None:
         job = await store.get_job(job_id)
         if not job:
             continue
+        request_id = job.get("requestId")
         if job.get("status") == "cancelled":
+            logger.info(
+                "Report job cancelled",
+                extra={
+                    "job_id": job_id,
+                    "requestId": request_id,
+                    "duration_ms": 0,
+                    "status": "cancelled",
+                },
+            )
             continue
         await store.update_job(
             job_id,
             {"status": "running", "startedAt": _now_iso()},
             ttl_seconds=settings.report_job_ttl_seconds,
         )
+        logger.info(
+            "Report job running",
+            extra={"job_id": job_id, "requestId": request_id, "status": "running"},
+        )
         started = time.monotonic()
         try:
             payload = job.get("payload") or {}
             view_payload = ViewRequest(**payload)
-            response = await build_report_view_response(view_payload, job.get("requestId"))
+            response = await build_report_view_response(view_payload, request_id)
             result_payload = response.dict()
             await _persist_job_result(job_id, result_payload)
             await store.update_job(
@@ -328,7 +345,9 @@ async def _worker_loop() -> None:
                 "Report job done",
                 extra={
                     "job_id": job_id,
+                    "requestId": request_id,
                     "duration_ms": int((time.monotonic() - started) * 1000),
+                    "status": "done",
                 },
             )
         except Exception as exc:
@@ -345,7 +364,9 @@ async def _worker_loop() -> None:
                 "Report job failed",
                 extra={
                     "job_id": job_id,
+                    "requestId": request_id,
                     "duration_ms": int((time.monotonic() - started) * 1000),
+                    "status": "failed",
                     "error": str(exc),
                 },
             )
