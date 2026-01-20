@@ -26,6 +26,7 @@ Nginx (для проксирования, если используется)
 
 Local setup + Running tests from scratch
 
+rm -rf .venv
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
@@ -95,6 +96,35 @@ REPORT_REMOTE_ALLOWLIST — allowlist для абсолютных remoteSource.u
 REDIS_URL — при задании используется Redis-кэш для записей/фильтров (TTL задаётся REPORT_FILTERS_CACHE_TTL).
 
 BATCH_RESULTS_TTL_SECONDS — TTL для файлов в ./batch_results (автоочистка).
+
+ASYNC_REPORTS — включает асинхронный режим для /api/report/view (0/1). По умолчанию 0.
+
+REPORT_JOB_TTL_SECONDS — TTL для report job и результатов.
+
+REPORT_JOB_MAX_RESULT_BYTES — лимит размера результата (больше лимита пишется в файл).
+
+REPORT_JOBS_DIR — каталог для файлов результатов report jobs (по умолчанию ./report_results).
+
+REPORT_JOB_MAX_CONCURRENCY — максимум параллельных report-задач.
+
+REPORT_JOB_QUEUE_MAX_SIZE — лимит очереди report-задач (при превышении /api/report/view вернёт 429).
+
+REPORT_JOB_POLL_INTERVAL_MS — рекомендованный интервал polling на фронте.
+
+Async report mode (Stage 1)
+
+- Включение: ASYNC_REPORTS=1.
+- По умолчанию /api/report/view возвращает 202 + {job_id, status:"queued"}.
+- Принудительный синхронный режим (fallback): добавьте query `?sync=1` или заголовок `X-Report-Sync: 1`.
+- Статус/результат: GET /api/report/jobs/{job_id}.
+- Отмена/удаление: DELETE /api/report/jobs/{job_id}.
+- /api/report/filters и /api/report/details остаются синхронными в любом режиме.
+
+Ограничения in-process режима:
+
+- Очередь и статусы не переживают рестарт процесса.
+- При нескольких воркерах (multi-process) in-memory очередь/статусы не шарятся.
+- Для продакшена рекомендуется Redis job_store и отдельный worker (следующий этап).
 
 4. Проверка работы сервиса
    docker ps

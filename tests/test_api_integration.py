@@ -16,10 +16,12 @@ class ApiIntegrationTests(unittest.TestCase):
         self._redis_url = os.environ.get("REDIS_URL")
         self._upstream_base = os.environ.get("UPSTREAM_BASE_URL")
         self._max_records = os.environ.get("REPORT_MAX_RECORDS")
+        self._async_reports = os.environ.get("ASYNC_REPORTS")
         os.environ["REPORT_REMOTE_ALLOWLIST"] = "example.com"
         os.environ.pop("REDIS_URL", None)
         os.environ["UPSTREAM_BASE_URL"] = "http://example.com"
         os.environ.pop("REPORT_MAX_RECORDS", None)
+        os.environ["ASYNC_REPORTS"] = "0"
         record_cache._STORE.clear()
 
     def tearDown(self) -> None:
@@ -39,6 +41,10 @@ class ApiIntegrationTests(unittest.TestCase):
             os.environ.pop("REPORT_MAX_RECORDS", None)
         else:
             os.environ["REPORT_MAX_RECORDS"] = self._max_records
+        if self._async_reports is None:
+            os.environ.pop("ASYNC_REPORTS", None)
+        else:
+            os.environ["ASYNC_REPORTS"] = self._async_reports
 
     def _base_payload(self) -> dict:
         return {
