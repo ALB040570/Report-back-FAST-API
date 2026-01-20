@@ -100,16 +100,33 @@ def _build_detail_fields(
     if detail_fields:
         return _unique_preserve_order([str(item) for item in detail_fields if str(item)])
 
+    metric_field = _resolve_metric_field(snapshot_dict, metric)
     pivot = snapshot_dict.get("pivot") or {}
     rows = pivot.get("rows") or []
     columns = pivot.get("columns") or []
-    metric_field = None
-    if isinstance(metric, dict):
-        metric_field = metric.get("fieldKey") or metric.get("field") or metric.get("sourceKey")
     fields = [str(item) for item in rows + columns if str(item)]
     if metric_field:
         fields.append(str(metric_field))
     return _unique_preserve_order(fields)
+
+
+def _resolve_metric_field(snapshot_dict: Dict[str, Any], metric: Dict[str, Any] | None) -> str | None:
+    if not isinstance(metric, dict):
+        return None
+    direct = metric.get("fieldKey") or metric.get("field") or metric.get("sourceKey")
+    if direct:
+        return str(direct)
+    metric_id = metric.get("id") or metric.get("key")
+    if not metric_id:
+        return None
+    for entry in snapshot_dict.get("metrics") or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("id") == metric_id or entry.get("key") == metric_id:
+            resolved = entry.get("fieldKey") or entry.get("field") or entry.get("sourceKey")
+            if resolved:
+                return str(resolved)
+    return None
 
 
 def _build_field_meta(

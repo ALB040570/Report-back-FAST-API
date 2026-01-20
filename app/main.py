@@ -1,8 +1,10 @@
+import logging
 import os
 from typing import Any, Dict
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import ValidationError
 
 from app.api.batch import router as batch_router
 from app.models.view_request import ViewRequest
@@ -20,6 +22,8 @@ app = FastAPI(
     description="Бэкенд для конструктора дашбордов (Service360)",
     version="0.1.0",
 )
+
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -152,7 +156,21 @@ async def build_report_filters(payload: ViewRequest, limit: int = 200) -> Dict[s
 
 @app.post("/api/report/details", tags=["report"])
 async def build_report_details(payload: Dict[str, Any]) -> Dict[str, Any]:
-    view_payload = ViewRequest(**payload)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Details payload must be a JSON object")
+
+    template_id = payload.get("templateId")
+    try:
+        view_payload = ViewRequest(**payload)
+    except ValidationError as exc:
+        logger.warning(
+            "Invalid details payload",
+            extra={"templateId": template_id, "errors": exc.errors()},
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid details payload", "errors": exc.errors()},
+        ) from exc
     limit = payload.get("limit") if isinstance(payload, dict) else None
     offset = payload.get("offset") if isinstance(payload, dict) else None
 
@@ -165,30 +183,42 @@ async def build_report_details(payload: Dict[str, Any]) -> Dict[str, Any]:
     except (TypeError, ValueError):
         offset = 0
 
-    joins = await resolve_joins(view_payload.remoteSource)
-    cache_key = build_records_cache_key(view_payload.templateId, view_payload.remoteSource, joins)
-    joined_records = get_cached_records(cache_key)
-    join_debug: Dict[str, Any] = {}
-    cache_hit = joined_records is not None
-    if joined_records is None:
-        records = load_records(view_payload.remoteSource)
-        joined_records, join_debug = await apply_joins(
-            records,
-            view_payload.remoteSource,
-            joins_override=joins,
-        )
-        if joined_records:
-            set_cached_records(cache_key, joined_records)
+    try:
+        joins = await resolve_joins(view_payload.remoteSource)
+        cache_key = build_records_cache_key(view_payload.templateId, view_payload.remoteSource, joins)
+        joined_records = get_cached_records(cache_key)
+        join_debug: Dict[str, Any] = {}
+        cache_hit = joined_records is not None
+        if joined_records is None:
+            records = load_records(view_payload.remoteSource)
+            joined_records, join_debug = await apply_joins(
+                records,
+                view_payload.remoteSource,
+                joins_override=joins,
+            )
+            if joined_records:
+                set_cached_records(cache_key, joined_records)
 
-    response, debug_payload = build_details(
-        joined_records or [],
-        view_payload.snapshot,
-        view_payload.filters,
-        payload,
-        limit=limit,
-        offset=offset,
-        debug=bool(os.getenv("REPORT_DEBUG_FILTERS")),
-    )
+        response, debug_payload = build_details(
+            joined_records or [],
+            view_payload.snapshot,
+            view_payload.filters,
+            payload,
+            limit=limit,
+            offset=offset,
+            debug=bool(os.getenv("REPORT_DEBUG_FILTERS")),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Failed to build report details",
+            extra={"templateId": view_payload.templateId},
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to build report details: {exc}",
+        ) from exc
 
     if os.getenv("REPORT_DEBUG_FILTERS"):
         debug_payload["cacheHit"] = cache_hit

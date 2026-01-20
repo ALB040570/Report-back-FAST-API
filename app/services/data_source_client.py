@@ -13,6 +13,7 @@ from app.models.remote_source import RemoteSource
 
 SERVICE360_BASE_URL = os.getenv("SERVICE360_BASE_URL", "http://45.8.116.32")
 logger = logging.getLogger(__name__)
+_RESULTS_DIR = os.path.join(os.getcwd(), "batch_results")
 
 _CAMEL_SPLIT_RE = re.compile(r"[^0-9A-Za-z]+")
 
@@ -184,6 +185,101 @@ def _extract_records(data: Any, full_url: str) -> List[Dict[str, Any]]:
     return []
 
 
+def _looks_like_request_payload(candidate: Any) -> bool:
+    if not isinstance(candidate, dict):
+        return False
+    return any(key in candidate for key in ("method", "params", "requests"))
+
+
+def _looks_like_batch_results(candidate: Any) -> bool:
+    if not isinstance(candidate, list) or not candidate:
+        return False
+    return all(
+        isinstance(item, dict) and ("ok" in item) and ("data" in item)
+        for item in candidate
+    )
+
+
+def _load_results_file(path_value: str) -> Any | None:
+    if not path_value:
+        return None
+    path = path_value
+    if not os.path.isabs(path):
+        path = os.path.join(os.getcwd(), path)
+    base_dir = os.path.abspath(_RESULTS_DIR)
+    target = os.path.abspath(path)
+    if target != base_dir and not target.startswith(base_dir + os.sep):
+        return None
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _extract_batch_records(results: List[Any], label: str) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        if not item.get("ok"):
+            continue
+        data = item.get("data")
+        if data is None:
+            continue
+        extracted = _extract_records(data, label)
+        params = item.get("params") if isinstance(item.get("params"), dict) else None
+        if params:
+            _apply_request_metadata(extracted, params)
+        records.extend(extracted)
+    return records
+
+
+def _extract_local_records(remote_source: RemoteSource) -> tuple[bool, List[Dict[str, Any]]]:
+    candidates: List[Any] = []
+    body = normalize_remote_body(remote_source)
+    if isinstance(body, (dict, list)):
+        candidates.append(body)
+    if isinstance(remote_source.remoteMeta, dict):
+        candidates.append(remote_source.remoteMeta)
+
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            results_file_ref = candidate.get("resultsFileRef") or candidate.get("results_file_ref")
+            if isinstance(results_file_ref, str):
+                file_payload = _load_results_file(results_file_ref)
+                if file_payload is not None:
+                    found, records = _extract_local_records_from_payload(file_payload)
+                    if found:
+                        return True, records
+
+            results = candidate.get("results")
+            if isinstance(results, list):
+                return True, _extract_batch_records(results, "batch")
+
+            if "records" in candidate:
+                return True, _extract_records(candidate, "local")
+            if ("result" in candidate or "data" in candidate) and not _looks_like_request_payload(candidate):
+                return True, _extract_records(candidate, "local")
+
+        if _looks_like_batch_results(candidate):
+            return True, _extract_batch_records(candidate, "batch")
+
+    return False, []
+
+
+def _extract_local_records_from_payload(payload: Any) -> tuple[bool, List[Dict[str, Any]]]:
+    if isinstance(payload, dict):
+        results = payload.get("results")
+        if isinstance(results, list):
+            return True, _extract_batch_records(results, "batch")
+        if "records" in payload or "result" in payload or "data" in payload:
+            return True, _extract_records(payload, "local")
+    if _looks_like_batch_results(payload):
+        return True, _extract_batch_records(payload, "batch")
+    return False, []
+
+
 def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
     """
     Загружает сырые записи из удалённого источника,
@@ -201,6 +297,10 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
 
         [ ... ]  # если API сразу возвращает список записей
     """
+
+    local_found, local_records = _extract_local_records(remote_source)
+    if local_found:
+        return local_records
 
     # 1. Базовые поля источника
     method = (remote_source.method or "POST").upper()
