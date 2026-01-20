@@ -24,6 +24,15 @@ Docker (Docker Engine / Docker Desktop)
 
 Nginx (для проксирования, если используется)
 
+Local setup + Running tests from scratch
+
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+export NO_NETWORK=1
+python -m unittest discover -s tests
+
 Установка и запуск
 
 1. Загрузить Docker-образ

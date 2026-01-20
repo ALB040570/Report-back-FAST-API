@@ -1,6 +1,8 @@
+anyio
 fastapi
-uvicorn[standard]
 httpx
-pydantic
-requests
+pydantic<2
 redis
+requests
+respx
+uvicorn[standard]
