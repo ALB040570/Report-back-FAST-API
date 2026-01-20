@@ -1,33 +1,98 @@
 import hashlib
 import json
+import logging
 import os
 import time
 from typing import Any, Dict, Tuple
 
+import redis.asyncio as redis
+
 from app.services.data_source_client import build_request_payloads, normalize_remote_body
 
+
+logger = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = float(os.getenv("REPORT_FILTERS_CACHE_TTL", "30"))
 _CACHE_MAX_ITEMS = int(os.getenv("REPORT_FILTERS_CACHE_MAX", "20"))
 _STORE: Dict[str, Tuple[float, Any]] = {}
+_REDIS_CLIENT: redis.Redis | None = None
+_REDIS_URL: str | None = None
 
 
-def get_cached_records(key: str) -> Any | None:
+def _get_redis_client() -> redis.Redis | None:
+    global _REDIS_CLIENT, _REDIS_URL
+    url = os.getenv("REDIS_URL")
+    if not url:
+        return None
+    if _REDIS_CLIENT is None or url != _REDIS_URL:
+        _REDIS_URL = url
+        _REDIS_CLIENT = redis.from_url(url)
+    return _REDIS_CLIENT
+
+
+def _serialize_value(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _deserialize_value(payload: Any) -> Any | None:
+    if payload is None:
+        return None
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8")
+    if not payload:
+        return None
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+
+
+async def get_cached_records(key: str) -> Any | None:
     if not key:
         return None
+    client = _get_redis_client()
+    if client is not None:
+        try:
+            payload = await client.get(key)
+        except Exception as exc:
+            logger.warning("Record cache redis get failed", extra={"error": str(exc)})
+        else:
+            value = _deserialize_value(payload)
+            if value is not None:
+                logger.info("Record cache hit", extra={"backend": "redis", "key": key[:12]})
+                return value
+            logger.info("Record cache miss", extra={"backend": "redis", "key": key[:12]})
+            return None
+
     entry = _STORE.get(key)
     if not entry:
+        logger.info("Record cache miss", extra={"backend": "memory", "key": key[:12]})
         return None
     created_at, value = entry
     if time.time() - created_at > _CACHE_TTL_SECONDS:
         _STORE.pop(key, None)
+        logger.info("Record cache miss", extra={"backend": "memory", "key": key[:12]})
         return None
+    logger.info("Record cache hit", extra={"backend": "memory", "key": key[:12]})
     return value
 
 
-def set_cached_records(key: str, value: Any) -> None:
+async def set_cached_records(key: str, value: Any) -> None:
     if not key:
         return
+    client = _get_redis_client()
+    if client is not None:
+        try:
+            payload = _serialize_value(value)
+            ttl_seconds = int(_CACHE_TTL_SECONDS) if _CACHE_TTL_SECONDS > 0 else 0
+            if ttl_seconds > 0:
+                await client.setex(key, ttl_seconds, payload)
+            else:
+                await client.set(key, payload)
+            return
+        except Exception as exc:
+            logger.warning("Record cache redis set failed", extra={"error": str(exc)})
+
     if len(_STORE) >= _CACHE_MAX_ITEMS:
         oldest_key = min(_STORE.items(), key=lambda item: item[1][0])[0]
         _STORE.pop(oldest_key, None)

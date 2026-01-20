@@ -9,6 +9,7 @@ class Settings:
     batch_concurrency: int
     batch_max_items: int
     batch_job_ttl_seconds: int
+    batch_results_ttl_seconds: int
     upstream_base_url: str
     upstream_url: str
     upstream_timeout: float
@@ -38,11 +39,14 @@ def _get_float(name: str, default: float) -> float:
 
 
 def get_settings() -> Settings:
+    batch_job_ttl_seconds = _get_int("BATCH_JOB_TTL_SECONDS", 3600)
+    batch_results_ttl_seconds = _get_int("BATCH_RESULTS_TTL_SECONDS", batch_job_ttl_seconds)
     return Settings(
         redis_url=os.getenv("REDIS_URL"),
         batch_concurrency=_get_int("BATCH_CONCURRENCY", 5),
         batch_max_items=_get_int("BATCH_MAX_ITEMS", 100),
-        batch_job_ttl_seconds=_get_int("BATCH_JOB_TTL_SECONDS", 3600),
+        batch_job_ttl_seconds=batch_job_ttl_seconds,
+        batch_results_ttl_seconds=batch_results_ttl_seconds,
         upstream_base_url=os.getenv("UPSTREAM_BASE_URL", ""),
         upstream_url=os.getenv("UPSTREAM_URL", ""),
         upstream_timeout=_get_float("UPSTREAM_TIMEOUT", 30.0),

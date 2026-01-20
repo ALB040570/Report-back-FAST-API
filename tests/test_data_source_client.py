@@ -1,6 +1,9 @@
+import asyncio
+import os
 import unittest
 
-from app.services.data_source_client import build_request_payloads
+from app.models.remote_source import RemoteSource
+from app.services.data_source_client import async_load_records, build_request_payloads
 
 
 class DataSourceClientTests(unittest.TestCase):
@@ -48,6 +51,42 @@ class DataSourceClientTests(unittest.TestCase):
         self.assertEqual(payloads[0].body["method"], "data/loadEquipment")
         self.assertEqual(payloads[0].body["params"], [0])
         self.assertIsNone(payloads[0].params)
+
+    def test_async_load_records_from_batch_results(self) -> None:
+        remote_source = RemoteSource(
+            url="mock://batch",
+            method="POST",
+            body={
+                "results": [
+                    {
+                        "ok": True,
+                        "params": {"date": "2025-01-01"},
+                        "data": {"result": {"records": [{"value": 1}]}},
+                    }
+                ]
+            },
+        )
+        records = asyncio.run(async_load_records(remote_source))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["value"], 1)
+        self.assertEqual(records[0]["requestDate"], "2025-01-01")
+
+    def test_async_load_records_blocks_private_without_allowlist(self) -> None:
+        allowlist = os.environ.pop("REPORT_REMOTE_ALLOWLIST", None)
+        upstream_allowlist = os.environ.pop("UPSTREAM_ALLOWLIST", None)
+        try:
+            remote_source = RemoteSource(
+                url="http://localhost:8080/private",
+                method="POST",
+                body={},
+            )
+            with self.assertRaises(ValueError):
+                asyncio.run(async_load_records(remote_source))
+        finally:
+            if allowlist is not None:
+                os.environ["REPORT_REMOTE_ALLOWLIST"] = allowlist
+            if upstream_allowlist is not None:
+                os.environ["UPSTREAM_ALLOWLIST"] = upstream_allowlist
 
 
 if __name__ == "__main__":

@@ -45,12 +45,15 @@ SERVICE360_BASE_URL=http://45.8.116.32
 REPORT_FILTERS_MAX_VALUES=200
 REPORT_FILTERS_CACHE_TTL=30
 REPORT_FILTERS_CACHE_MAX=20
+REPORT_MAX_RECORDS=100000
+REPORT_REMOTE_ALLOWLIST=45.8.116.32
 REPORT_DEBUG_FILTERS=0
 REPORT_DEBUG_JOINS=0
 REDIS_URL=redis://localhost:6379/0
 BATCH_CONCURRENCY=5
 BATCH_MAX_ITEMS=100
 BATCH_JOB_TTL_SECONDS=3600
+BATCH_RESULTS_TTL_SECONDS=3600
 UPSTREAM_BASE_URL=http://45.8.116.32
 # UPSTREAM_URL=http://45.8.116.32/dtj/api/plan
 UPSTREAM_TIMEOUT=30
@@ -72,6 +75,17 @@ docker run -d \
 наружу проброшен на 127.0.0.1:8001
 
 сервис доступен только локально (через Nginx)
+
+Дополнительные переменные:
+
+REPORT_MAX_RECORDS — лимит записей для обработки (0/пусто = без лимита). При превышении возвращается 422.
+
+REPORT_REMOTE_ALLOWLIST — allowlist для абсолютных remoteSource.url (формат как UPSTREAM_ALLOWLIST).
+Если не задан, абсолютные URL блокируются, а приватные адреса/localhost запрещены.
+
+REDIS_URL — при задании используется Redis-кэш для записей/фильтров (TTL задаётся REPORT_FILTERS_CACHE_TTL).
+
+BATCH_RESULTS_TTL_SECONDS — TTL для файлов в ./batch_results (автоочистка).
 
 4. Проверка работы сервиса
    docker ps

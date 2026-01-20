@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -112,7 +113,9 @@ async def process_job(job_id: str, store: JobStore) -> None:
         )
         return
 
+    started_at = time.monotonic()
     await store.update_job(job_id, {"status": "running", "startedAt": _now_iso()})
+    logger.info("Batch job started", extra={"job_id": job_id, "total": job.get("total", 0)})
 
     params_list: List[Dict[str, Any]] = job.get("params", [])
     total = len(params_list)
@@ -173,6 +176,10 @@ async def process_job(job_id: str, store: JobStore) -> None:
                     "error": "cancelled",
                 }
         await _finish_job(job_id, store, "cancelled", error=None, results=_compact_results(results))
+        logger.info(
+            "Batch job cancelled",
+            extra={"job_id": job_id, "duration_ms": int((time.monotonic() - started_at) * 1000)},
+        )
         return
 
     safe_results = _compact_results(results)
@@ -182,6 +189,14 @@ async def process_job(job_id: str, store: JobStore) -> None:
     if error_count:
         error_message = f"{error_count} items failed"
     await _finish_job(job_id, store, status, error=error_message, results=safe_results)
+    logger.info(
+        "Batch job completed",
+        extra={
+            "job_id": job_id,
+            "status": status,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+        },
+    )
 
 
 async def _process_item(
@@ -195,6 +210,7 @@ async def _process_item(
     meta: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     payload = _build_upstream_payload(params, method=method, source_id=source_id, meta=meta)
+    started_at = time.monotonic()
     try:
         data, status_code = await async_request_json(
             client,
@@ -202,6 +218,14 @@ async def _process_item(
             upstream_url,
             headers={"Content-Type": "application/json"},
             json_body=payload,
+        )
+        logger.info(
+            "Batch item finished",
+            extra={
+                "job_id": job_id,
+                "status_code": status_code,
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
+            },
         )
         return {
             "ok": True,
@@ -214,6 +238,14 @@ async def _process_item(
             "Upstream HTTP error",
             extra={"job_id": job_id, "status_code": exc.status_code},
         )
+        logger.info(
+            "Batch item finished",
+            extra={
+                "job_id": job_id,
+                "status_code": exc.status_code,
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
+            },
+        )
         return {
             "ok": False,
             "params": params,
@@ -222,6 +254,10 @@ async def _process_item(
         }
     except Exception as exc:
         logger.exception("Upstream request failed", extra={"job_id": job_id})
+        logger.info(
+            "Batch item finished",
+            extra={"job_id": job_id, "duration_ms": int((time.monotonic() - started_at) * 1000)},
+        )
         return {
             "ok": False,
             "params": params,
@@ -285,6 +321,31 @@ def _summarize_results(results: List[Dict[str, Any]]) -> Dict[str, int]:
     return {"ok": ok_count, "failed": fail_count, "total": len(results)}
 
 
+def _cleanup_results_dir(ttl_seconds: int) -> None:
+    if ttl_seconds <= 0:
+        return
+    now = time.time()
+    try:
+        entries = os.listdir(_RESULTS_DIR)
+    except OSError:
+        return
+    removed = 0
+    for name in entries:
+        path = os.path.join(_RESULTS_DIR, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        if now - stat.st_mtime > ttl_seconds:
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError:
+                continue
+    if removed:
+        logger.info("Batch results cleanup", extra={"removed": removed, "ttl_seconds": ttl_seconds})
+
+
 async def _finish_job(
     job_id: str,
     store: JobStore,
@@ -330,3 +391,4 @@ async def _finish_job(
             "failed": results_summary["failed"],
         },
     )
+    _cleanup_results_dir(settings.batch_results_ttl_seconds)

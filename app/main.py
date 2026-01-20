@@ -1,15 +1,16 @@
 import logging
 import os
+import time
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from app.api.batch import router as batch_router
 from app.models.view_request import ViewRequest
 from app.models.view import ChartConfig, ViewResponse
-from app.services.data_source_client import load_records
+from app.services.data_source_client import async_load_records, get_records_limit
 from app.services.detail_service import build_details
 from app.services.filter_service import apply_filters, collect_filter_options
 from app.services.join_service import apply_joins, resolve_joins
@@ -24,6 +25,16 @@ app = FastAPI(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _enforce_records_limit(count: int, limit: int | None, stage: str) -> None:
+    if limit is None:
+        return
+    if count > limit:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Records limit exceeded after {stage}: {count} > {limit}",
+        )
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,24 +57,91 @@ async def health_check() -> Dict[str, Any]:
 
 
 @app.post("/api/report/view", response_model=ViewResponse, tags=["report"])
-async def build_report_view(payload: ViewRequest) -> ViewResponse:
+async def build_report_view(payload: ViewRequest, request: Request) -> ViewResponse:
     """
     Основной endpoint для конструктора дашбордов.
     1. Загружает сырые записи из remoteSource.
     2. Строит простое представление (pivot) на их основе.
     3. Возвращает view + простейший chartConfig.
     """
-    # 1. Загружаем записи из удалённого источника
-    records = load_records(payload.remoteSource)
+    request_id = request.headers.get("X-Request-ID")
+    max_records = get_records_limit()
 
-    # 2. Выполняем join-ы, фильтры и строим pivot-представление
-    joined_records, join_debug = await apply_joins(records, payload.remoteSource)
-    filtered_records, filter_debug = apply_filters(
-        joined_records,
-        payload.snapshot,
-        payload.filters,
-    )
-    pivot_view = build_view(filtered_records, payload.snapshot)
+    try:
+        load_started = time.monotonic()
+        records = await async_load_records(payload.remoteSource)
+        _enforce_records_limit(len(records), max_records, "load_records")
+        logger.info(
+            "report.view.load_records",
+            extra={
+                "templateId": payload.templateId,
+                "requestId": request_id,
+                "records": len(records),
+                "duration_ms": int((time.monotonic() - load_started) * 1000),
+            },
+        )
+
+        joins_started = time.monotonic()
+        joined_records, join_debug = await apply_joins(
+            records,
+            payload.remoteSource,
+            max_records=max_records,
+        )
+        _enforce_records_limit(len(joined_records), max_records, "apply_joins")
+        logger.info(
+            "report.view.apply_joins",
+            extra={
+                "templateId": payload.templateId,
+                "requestId": request_id,
+                "recordsBefore": len(records),
+                "recordsAfter": len(joined_records),
+                "duration_ms": int((time.monotonic() - joins_started) * 1000),
+            },
+        )
+
+        filters_started = time.monotonic()
+        filtered_records, filter_debug = apply_filters(
+            joined_records,
+            payload.snapshot,
+            payload.filters,
+        )
+        logger.info(
+            "report.view.apply_filters",
+            extra={
+                "templateId": payload.templateId,
+                "requestId": request_id,
+                "recordsBefore": len(joined_records),
+                "recordsAfter": len(filtered_records),
+                "duration_ms": int((time.monotonic() - filters_started) * 1000),
+            },
+        )
+
+        pivot_started = time.monotonic()
+        pivot_view = build_view(filtered_records, payload.snapshot)
+        logger.info(
+            "report.view.build_pivot",
+            extra={
+                "templateId": payload.templateId,
+                "requestId": request_id,
+                "rows": len(pivot_view.get("rows", [])),
+                "columns": len(pivot_view.get("columns", [])),
+                "duration_ms": int((time.monotonic() - pivot_started) * 1000),
+            },
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.warning(
+            "Failed to build report view",
+            extra={"templateId": payload.templateId, "requestId": request_id, "error": str(exc)},
+        )
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception(
+            "Failed to build report view",
+            extra={"templateId": payload.templateId, "requestId": request_id},
+        )
+        raise HTTPException(status_code=502, detail=f"Failed to build report view: {exc}") from exc
 
     # 3. Строим простейший chartConfig-заглушку
     chart_config = ChartConfig(
@@ -97,25 +175,69 @@ async def build_report_view(payload: ViewRequest) -> ViewResponse:
 
 
 @app.post("/api/report/filters", tags=["report"])
-async def build_report_filters(payload: ViewRequest, limit: int = 200) -> Dict[str, Any]:
+async def build_report_filters(payload: ViewRequest, request: Request, limit: int = 200) -> Dict[str, Any]:
     """
     Endpoint для взаимозависимых фильтров (cascading filters).
     Возвращает доступные значения для каждого ключа фильтра.
     """
-    joins = await resolve_joins(payload.remoteSource)
-    cache_key = build_records_cache_key(payload.templateId, payload.remoteSource, joins)
-    joined_records = get_cached_records(cache_key)
-    join_debug: Dict[str, Any] = {}
-    cache_hit = joined_records is not None
-    if joined_records is None:
-        records = load_records(payload.remoteSource)
-        joined_records, join_debug = await apply_joins(
-            records,
-            payload.remoteSource,
-            joins_override=joins,
+    request_id = request.headers.get("X-Request-ID")
+    max_records = get_records_limit()
+
+    try:
+        joins = await resolve_joins(payload.remoteSource)
+        cache_key = build_records_cache_key(payload.templateId, payload.remoteSource, joins)
+        joined_records = await get_cached_records(cache_key)
+        join_debug: Dict[str, Any] = {}
+        cache_hit = joined_records is not None
+        if joined_records is None:
+            load_started = time.monotonic()
+            records = await async_load_records(payload.remoteSource)
+            _enforce_records_limit(len(records), max_records, "load_records")
+            logger.info(
+                "report.filters.load_records",
+                extra={
+                    "templateId": payload.templateId,
+                    "requestId": request_id,
+                    "records": len(records),
+                    "duration_ms": int((time.monotonic() - load_started) * 1000),
+                },
+            )
+            joins_started = time.monotonic()
+            joined_records, join_debug = await apply_joins(
+                records,
+                payload.remoteSource,
+                joins_override=joins,
+                max_records=max_records,
+            )
+            _enforce_records_limit(len(joined_records), max_records, "apply_joins")
+            logger.info(
+                "report.filters.apply_joins",
+                extra={
+                    "templateId": payload.templateId,
+                    "requestId": request_id,
+                    "recordsBefore": len(records),
+                    "recordsAfter": len(joined_records),
+                    "duration_ms": int((time.monotonic() - joins_started) * 1000),
+                },
+            )
+            if joined_records:
+                await set_cached_records(cache_key, joined_records)
+        else:
+            _enforce_records_limit(len(joined_records), max_records, "cache_records")
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.warning(
+            "Failed to build report filters",
+            extra={"templateId": payload.templateId, "requestId": request_id, "error": str(exc)},
         )
-        if joined_records:
-            set_cached_records(cache_key, joined_records)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception(
+            "Failed to build report filters",
+            extra={"templateId": payload.templateId, "requestId": request_id},
+        )
+        raise HTTPException(status_code=502, detail=f"Failed to build report filters: {exc}") from exc
 
     env_limit = os.getenv("REPORT_FILTERS_MAX_VALUES")
     if env_limit and env_limit.isdigit() and limit == 200:
@@ -123,11 +245,21 @@ async def build_report_filters(payload: ViewRequest, limit: int = 200) -> Dict[s
     if limit <= 0:
         limit = 200
 
+    filters_started = time.monotonic()
     options, meta, truncated, selected_pruned, debug = collect_filter_options(
         joined_records,
         payload.snapshot,
         payload.filters,
         max_unique=limit,
+    )
+    logger.info(
+        "report.filters.collect_options",
+        extra={
+            "templateId": payload.templateId,
+            "requestId": request_id,
+            "records": len(joined_records or []),
+            "duration_ms": int((time.monotonic() - filters_started) * 1000),
+        },
     )
     response: Dict[str, Any] = {
         "options": options,
@@ -155,7 +287,7 @@ async def build_report_filters(payload: ViewRequest, limit: int = 200) -> Dict[s
 
 
 @app.post("/api/report/details", tags=["report"])
-async def build_report_details(payload: Dict[str, Any]) -> Dict[str, Any]:
+async def build_report_details(payload: Dict[str, Any], request: Request) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Details payload must be a JSON object")
 
@@ -183,22 +315,52 @@ async def build_report_details(payload: Dict[str, Any]) -> Dict[str, Any]:
     except (TypeError, ValueError):
         offset = 0
 
+    request_id = request.headers.get("X-Request-ID")
+    max_records = get_records_limit()
+
     try:
         joins = await resolve_joins(view_payload.remoteSource)
         cache_key = build_records_cache_key(view_payload.templateId, view_payload.remoteSource, joins)
-        joined_records = get_cached_records(cache_key)
+        joined_records = await get_cached_records(cache_key)
         join_debug: Dict[str, Any] = {}
         cache_hit = joined_records is not None
         if joined_records is None:
-            records = load_records(view_payload.remoteSource)
+            load_started = time.monotonic()
+            records = await async_load_records(view_payload.remoteSource)
+            _enforce_records_limit(len(records), max_records, "load_records")
+            logger.info(
+                "report.details.load_records",
+                extra={
+                    "templateId": view_payload.templateId,
+                    "requestId": request_id,
+                    "records": len(records),
+                    "duration_ms": int((time.monotonic() - load_started) * 1000),
+                },
+            )
+            joins_started = time.monotonic()
             joined_records, join_debug = await apply_joins(
                 records,
                 view_payload.remoteSource,
                 joins_override=joins,
+                max_records=max_records,
+            )
+            _enforce_records_limit(len(joined_records), max_records, "apply_joins")
+            logger.info(
+                "report.details.apply_joins",
+                extra={
+                    "templateId": view_payload.templateId,
+                    "requestId": request_id,
+                    "recordsBefore": len(records),
+                    "recordsAfter": len(joined_records),
+                    "duration_ms": int((time.monotonic() - joins_started) * 1000),
+                },
             )
             if joined_records:
-                set_cached_records(cache_key, joined_records)
+                await set_cached_records(cache_key, joined_records)
+        else:
+            _enforce_records_limit(len(joined_records), max_records, "cache_records")
 
+        details_started = time.monotonic()
         response, debug_payload = build_details(
             joined_records or [],
             view_payload.snapshot,
@@ -208,6 +370,16 @@ async def build_report_details(payload: Dict[str, Any]) -> Dict[str, Any]:
             offset=offset,
             debug=bool(os.getenv("REPORT_DEBUG_FILTERS")),
         )
+        logger.info(
+            "report.details.build_details",
+            extra={
+                "templateId": view_payload.templateId,
+                "requestId": request_id,
+                "records": len(joined_records or []),
+                "entries": len(response.get("entries", [])),
+                "duration_ms": int((time.monotonic() - details_started) * 1000),
+            },
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -216,7 +388,7 @@ async def build_report_details(payload: Dict[str, Any]) -> Dict[str, Any]:
             extra={"templateId": view_payload.templateId},
         )
         raise HTTPException(
-            status_code=400,
+            status_code=422 if isinstance(exc, ValueError) else 502,
             detail=f"Failed to build report details: {exc}",
         ) from exc
 

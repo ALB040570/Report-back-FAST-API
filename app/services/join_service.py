@@ -2,7 +2,7 @@ import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.models.remote_source import RemoteSource
-from app.services.data_source_client import load_records
+from app.services.data_source_client import async_load_records
 from app.services.source_registry import get_source_config
 
 
@@ -132,6 +132,7 @@ async def apply_joins(
     base_rows: List[Dict[str, Any]],
     remote_source: RemoteSource,
     joins_override: Optional[List[Dict[str, Any]]] = None,
+    max_records: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     joins = joins_override if joins_override is not None else await _resolve_joins(remote_source)
     debug: Dict[str, Any] = {
@@ -159,10 +160,14 @@ async def apply_joins(
                     headers=config.headers,
                     rawBody=config.raw_body,
                 )
-                join_rows = load_records(join_source)
+                join_rows = await async_load_records(join_source)
+                if max_records and len(join_rows) > max_records:
+                    raise ValueError(f"Records limit exceeded: {len(join_rows)} > {max_records}")
 
         base_before = len(rows)
         rows, matched_rows = _apply_join(rows, join_rows, join)
+        if max_records and len(rows) > max_records:
+            raise ValueError(f"Records limit exceeded: {len(rows)} > {max_records}")
         debug["joinsApplied"].append(
             {
                 "joinId": join.get("id"),

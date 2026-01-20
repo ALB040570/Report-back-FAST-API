@@ -1,11 +1,15 @@
+import ipaddress
 import logging
 import os
 import re
+import time
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import json
-from app.services.upstream_client import build_full_url, request_json
+import httpx
+from app.services.upstream_client import UpstreamHTTPError, async_request_json, build_full_url, request_json
 
 
 from app.models.filters import Filters
@@ -37,6 +41,17 @@ def _build_mock_records(remote_source: RemoteSource, filters: Filters) -> List[D
         {"cls": "B", "year": 2023, "value": 15, "count": 4},
     ]
     return records
+
+
+def get_records_limit() -> int | None:
+    value = os.getenv("REPORT_MAX_RECORDS")
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
 
 
 def normalize_remote_body(remote_source: RemoteSource) -> Any:
@@ -138,6 +153,46 @@ def _to_camel_case(value: str) -> str:
     return "".join(f"{part[:1].upper()}{part[1:]}" for part in parts)
 
 
+def _get_remote_allowlist() -> str | None:
+    return os.getenv("REPORT_REMOTE_ALLOWLIST") or os.getenv("UPSTREAM_ALLOWLIST")
+
+
+def _is_full_url_allowed(url: str, allowlist: str | None) -> bool:
+    if not allowlist:
+        return False
+    target = urlparse(url)
+    target_host = target.netloc.lower()
+    entries = [item.strip() for item in allowlist.split(",") if item.strip()]
+    for entry in entries:
+        if entry.startswith("http://") or entry.startswith("https://"):
+            parsed = urlparse(entry)
+            if parsed.scheme == target.scheme and parsed.netloc.lower() == target_host:
+                return True
+        else:
+            if entry.lower() == target_host:
+                return True
+    return False
+
+
+def _is_private_host(host: str | None) -> bool:
+    if not host:
+        return False
+    lowered = host.lower()
+    if lowered in {"localhost"} or lowered.endswith(".local"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+    )
+
+
 def _build_request_metadata(params: Dict[str, Any] | None) -> Dict[str, Any]:
     if not params:
         return {}
@@ -183,6 +238,25 @@ def _extract_records(data: Any, full_url: str) -> List[Dict[str, Any]]:
 
     print(f"[load_records] URL={full_url}, records=0")
     return []
+
+
+def _prepare_request(
+    method: str,
+    headers: Dict[str, Any],
+    payload: RequestPayload,
+    full_url: str,
+) -> tuple[str, Dict[str, Any], Dict[str, Any] | None, Any | None]:
+    json_body = payload.body if isinstance(payload.body, (dict, list)) else None
+    params = payload.body if (method == "GET" and isinstance(payload.body, dict)) else None
+    request_method = method
+    request_headers = dict(headers)
+    if method == "GET" and json_body is not None:
+        request_method = "POST"
+        params = None
+        request_headers.setdefault("X-HTTP-Method-Override", "GET")
+        request_headers.setdefault("Content-Type", "application/json")
+        logger.info("Using method override for GET with body", extra={"url": full_url})
+    return request_method, request_headers, params, json_body if request_method != "GET" else None
 
 
 def _looks_like_request_payload(candidate: Any) -> bool:
@@ -280,6 +354,26 @@ def _extract_local_records_from_payload(payload: Any) -> tuple[bool, List[Dict[s
     return False, []
 
 
+def _resolve_full_url(url: str, base_url: str) -> str:
+    if url.startswith("http://") or url.startswith("https://"):
+        allowlist = _get_remote_allowlist()
+        if not _is_full_url_allowed(url, allowlist):
+            parsed = urlparse(url)
+            host = parsed.hostname
+            if not allowlist and _is_private_host(host):
+                raise ValueError("remoteSource.url points to a private host; allowlist is required")
+            raise ValueError("remoteSource.url is not allowed")
+        return url
+    return build_full_url(base_url, url)
+
+
+def _enforce_records_limit(records: List[Dict[str, Any]], limit: int | None) -> None:
+    if limit is None:
+        return
+    if len(records) > limit:
+        raise ValueError(f"Records limit exceeded: {len(records)} > {limit}")
+
+
 def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
     """
     Загружает сырые записи из удалённого источника,
@@ -300,6 +394,7 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
 
     local_found, local_records = _extract_local_records(remote_source)
     if local_found:
+        _enforce_records_limit(local_records, get_records_limit())
         return local_records
 
     # 1. Базовые поля источника
@@ -313,7 +408,7 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
     if is_mock:
         full_url = url
     else:
-        full_url = build_full_url(base_url, url)
+        full_url = _resolve_full_url(url, base_url)
     headers = remote_source.headers or {}
 
     # 2. Формируем тело запроса
@@ -323,26 +418,23 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
         return []
 
     records_all: List[Dict[str, Any]] = []
+    start = time.monotonic()
     for payload in request_payloads:
         if is_mock:
             records = _build_mock_records(remote_source, Filters())
         else:
-            json_body = payload.body if isinstance(payload.body, (dict, list)) else None
-            params = payload.body if (method == "GET" and isinstance(payload.body, dict)) else None
-            request_method = method
-            request_headers = dict(headers)
-            if method == "GET" and json_body is not None:
-                request_method = "POST"
-                params = None
-                request_headers.setdefault("X-HTTP-Method-Override", "GET")
-                request_headers.setdefault("Content-Type", "application/json")
-                logger.info("Using method override for GET with body", extra={"url": full_url})
+            request_method, request_headers, params, json_body = _prepare_request(
+                method,
+                headers,
+                payload,
+                full_url,
+            )
             data = request_json(
                 request_method,
                 full_url,
                 headers=request_headers,
                 params=params,
-                json_body=json_body if request_method != "GET" else None,
+                json_body=json_body,
                 timeout=30.0,
             )
             records = _extract_records(data, full_url)
@@ -352,4 +444,92 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
 
     if is_mock:
         print(f"[load_records] URL={full_url}, records={len(records_all)}")
+    _enforce_records_limit(records_all, get_records_limit())
+    duration_ms = int((time.monotonic() - start) * 1000)
+    logger.info(
+        "load_records",
+        extra={"url": full_url, "records": len(records_all), "duration_ms": duration_ms},
+    )
     return records_all
+
+
+async def _async_load_records_with_client(
+    remote_source: RemoteSource,
+    client: httpx.AsyncClient,
+) -> List[Dict[str, Any]]:
+    local_found, local_records = _extract_local_records(remote_source)
+    if local_found:
+        _enforce_records_limit(local_records, get_records_limit())
+        return local_records
+
+    method = (remote_source.method or "POST").upper()
+    url = (remote_source.url or "").strip()
+    base_url = SERVICE360_BASE_URL.rstrip("/")
+
+    if not url:
+        return []
+    is_mock = url.startswith("mock://")
+    if is_mock:
+        full_url = url
+    else:
+        full_url = _resolve_full_url(url, base_url)
+    headers = remote_source.headers or {}
+
+    body = normalize_remote_body(remote_source)
+    request_payloads = build_request_payloads(body)
+    if not request_payloads:
+        return []
+
+    records_all: List[Dict[str, Any]] = []
+    start = time.monotonic()
+    for payload in request_payloads:
+        if is_mock:
+            records = _build_mock_records(remote_source, Filters())
+        else:
+            request_method, request_headers, params, json_body = _prepare_request(
+                method,
+                headers,
+                payload,
+                full_url,
+            )
+            try:
+                data, _status_code = await async_request_json(
+                    client,
+                    request_method,
+                    full_url,
+                    headers=request_headers,
+                    params=params,
+                    json_body=json_body,
+                )
+            except UpstreamHTTPError as exc:
+                logger.warning(
+                    "Upstream HTTP error",
+                    extra={"url": full_url, "status_code": exc.status_code},
+                )
+                raise
+            records = _extract_records(data, full_url)
+
+        _apply_request_metadata(records, payload.params)
+        records_all.extend(records)
+
+    if is_mock:
+        print(f"[load_records] URL={full_url}, records={len(records_all)}")
+    _enforce_records_limit(records_all, get_records_limit())
+    duration_ms = int((time.monotonic() - start) * 1000)
+    logger.info(
+        "async_load_records",
+        extra={"url": full_url, "records": len(records_all), "duration_ms": duration_ms},
+    )
+    return records_all
+
+
+async def async_load_records(
+    remote_source: RemoteSource,
+    client: httpx.AsyncClient | None = None,
+    *,
+    timeout: float = 30.0,
+) -> List[Dict[str, Any]]:
+    if client is not None:
+        return await _async_load_records_with_client(remote_source, client)
+    async with httpx.AsyncClient(timeout=timeout) as async_client:
+        return await _async_load_records_with_client(remote_source, async_client)
