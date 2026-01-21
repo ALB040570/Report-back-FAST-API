@@ -99,6 +99,14 @@ BATCH_RESULTS_TTL_SECONDS — TTL для файлов в ./batch_results (авт
 
 ASYNC_REPORTS — включает асинхронный режим для /api/report/view (0/1). По умолчанию 0.
 
+REPORT_STREAMING — включает потоковый режим построения /api/report/view (0/1). По умолчанию 0.
+
+REPORT_CHUNK_SIZE — размер чанка для потоковой агрегации (по умолчанию 1000).
+
+REPORT_STREAMING_MAX_GROUPS — лимит количества групп (row/column) в streaming-режиме (превышение вернёт 422).
+
+REPORT_STREAMING_MAX_UNIQUE_VALUES_PER_DIM — лимит уникальных значений по измерению (0 = без лимита).
+
 REPORT_JOB_TTL_SECONDS — TTL для report job и результатов.
 
 REPORT_JOB_MAX_RESULT_BYTES — лимит размера результата (больше лимита пишется в файл).

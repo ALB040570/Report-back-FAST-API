@@ -18,10 +18,13 @@ class ReportAsyncModeTests(unittest.TestCase):
             "UPSTREAM_BASE_URL": os.environ.get("UPSTREAM_BASE_URL"),
             "REPORT_JOB_MAX_CONCURRENCY": os.environ.get("REPORT_JOB_MAX_CONCURRENCY"),
             "REPORT_JOB_QUEUE_MAX_SIZE": os.environ.get("REPORT_JOB_QUEUE_MAX_SIZE"),
+            "REPORT_STREAMING": os.environ.get("REPORT_STREAMING"),
+            "REPORT_CHUNK_SIZE": os.environ.get("REPORT_CHUNK_SIZE"),
         }
         os.environ["REPORT_REMOTE_ALLOWLIST"] = "example.com"
         os.environ["UPSTREAM_BASE_URL"] = "http://example.com"
         os.environ.pop("REDIS_URL", None)
+        os.environ["REPORT_STREAMING"] = "0"
 
     def tearDown(self) -> None:
         for key, value in self._env.items():

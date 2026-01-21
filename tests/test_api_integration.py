@@ -17,11 +17,14 @@ class ApiIntegrationTests(unittest.TestCase):
         self._upstream_base = os.environ.get("UPSTREAM_BASE_URL")
         self._max_records = os.environ.get("REPORT_MAX_RECORDS")
         self._async_reports = os.environ.get("ASYNC_REPORTS")
+        self._report_streaming = os.environ.get("REPORT_STREAMING")
+        self._report_chunk_size = os.environ.get("REPORT_CHUNK_SIZE")
         os.environ["REPORT_REMOTE_ALLOWLIST"] = "example.com"
         os.environ.pop("REDIS_URL", None)
         os.environ["UPSTREAM_BASE_URL"] = "http://example.com"
         os.environ.pop("REPORT_MAX_RECORDS", None)
         os.environ["ASYNC_REPORTS"] = "0"
+        os.environ["REPORT_STREAMING"] = "0"
         record_cache._STORE.clear()
 
     def tearDown(self) -> None:
@@ -45,6 +48,14 @@ class ApiIntegrationTests(unittest.TestCase):
             os.environ.pop("ASYNC_REPORTS", None)
         else:
             os.environ["ASYNC_REPORTS"] = self._async_reports
+        if self._report_streaming is None:
+            os.environ.pop("REPORT_STREAMING", None)
+        else:
+            os.environ["REPORT_STREAMING"] = self._report_streaming
+        if self._report_chunk_size is None:
+            os.environ.pop("REPORT_CHUNK_SIZE", None)
+        else:
+            os.environ["REPORT_CHUNK_SIZE"] = self._report_chunk_size
 
     def _base_payload(self) -> dict:
         return {
@@ -109,6 +120,21 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertIsInstance(data["chart"], dict)
             self.assertIn("type", data["chart"])
             self.assertIn("data", data["chart"])
+        finally:
+            router.__exit__(None, None, None)
+
+    def test_report_view_streaming_matches_sync(self) -> None:
+        router = self._mock_upstream()
+        try:
+            payload = self._base_payload()
+            os.environ["REPORT_STREAMING"] = "0"
+            sync_response = asyncio.run(self._post("/api/report/view", payload))
+            self.assertEqual(sync_response.status_code, 200)
+            os.environ["REPORT_STREAMING"] = "1"
+            os.environ["REPORT_CHUNK_SIZE"] = "1"
+            streaming_response = asyncio.run(self._post("/api/report/view", payload))
+            self.assertEqual(streaming_response.status_code, 200)
+            self.assertEqual(sync_response.json(), streaming_response.json())
         finally:
             router.__exit__(None, None, None)
 

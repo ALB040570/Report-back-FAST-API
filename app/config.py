@@ -17,6 +17,10 @@ class Settings:
     report_job_max_concurrency: int
     report_job_queue_max_size: int
     report_job_poll_interval_ms: int
+    report_streaming: bool
+    report_chunk_size: int
+    report_streaming_max_groups: int
+    report_streaming_max_unique_values_per_dim: int
     upstream_base_url: str
     upstream_url: str
     upstream_timeout: float
@@ -32,6 +36,17 @@ def _get_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return parsed if parsed > 0 else default
+
+
+def _get_int_allow_zero(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def _get_float(name: str, default: float) -> float:
@@ -73,6 +88,12 @@ def get_settings() -> Settings:
         report_job_max_concurrency=_get_int("REPORT_JOB_MAX_CONCURRENCY", 2),
         report_job_queue_max_size=_get_int("REPORT_JOB_QUEUE_MAX_SIZE", 100),
         report_job_poll_interval_ms=_get_int("REPORT_JOB_POLL_INTERVAL_MS", 200),
+        report_streaming=_get_bool("REPORT_STREAMING", False),
+        report_chunk_size=_get_int("REPORT_CHUNK_SIZE", 1000),
+        report_streaming_max_groups=_get_int_allow_zero("REPORT_STREAMING_MAX_GROUPS", 200000),
+        report_streaming_max_unique_values_per_dim=_get_int_allow_zero(
+            "REPORT_STREAMING_MAX_UNIQUE_VALUES_PER_DIM", 0
+        ),
         upstream_base_url=os.getenv("UPSTREAM_BASE_URL", ""),
         upstream_url=os.getenv("UPSTREAM_URL", ""),
         upstream_timeout=_get_float("UPSTREAM_TIMEOUT", 30.0),

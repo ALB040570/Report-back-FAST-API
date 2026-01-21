@@ -5,7 +5,7 @@ import re
 import time
 from urllib.parse import urlparse
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, AsyncIterator, Dict, Iterable, List
 
 import json
 import httpx
@@ -374,6 +374,14 @@ def _enforce_records_limit(records: List[Dict[str, Any]], limit: int | None) -> 
         raise ValueError(f"Records limit exceeded: {len(records)} > {limit}")
 
 
+def _iter_chunks(records: List[Dict[str, Any]], chunk_size: int) -> Iterable[List[Dict[str, Any]]]:
+    size = chunk_size if chunk_size > 0 else len(records)
+    if size <= 0:
+        return []
+    for idx in range(0, len(records), size):
+        yield records[idx : idx + size]
+
+
 def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
     """
     Загружает сырые записи из удалённого источника,
@@ -523,6 +531,79 @@ async def _async_load_records_with_client(
     return records_all
 
 
+async def _async_iter_records_with_client(
+    remote_source: RemoteSource,
+    client: httpx.AsyncClient,
+    chunk_size: int,
+) -> AsyncIterator[List[Dict[str, Any]]]:
+    local_found, local_records = _extract_local_records(remote_source)
+    if local_found:
+        _enforce_records_limit(local_records, get_records_limit())
+        for chunk in _iter_chunks(local_records, chunk_size):
+            yield chunk
+        return
+
+    method = (remote_source.method or "POST").upper()
+    url = (remote_source.url or "").strip()
+    base_url = SERVICE360_BASE_URL.rstrip("/")
+
+    if not url:
+        return
+    is_mock = url.startswith("mock://")
+    if is_mock:
+        full_url = url
+    else:
+        full_url = _resolve_full_url(url, base_url)
+    headers = remote_source.headers or {}
+
+    body = normalize_remote_body(remote_source)
+    request_payloads = build_request_payloads(body)
+    if not request_payloads:
+        return
+
+    total_records = 0
+    start = time.monotonic()
+    for payload in request_payloads:
+        if is_mock:
+            records = _build_mock_records(remote_source, Filters())
+        else:
+            request_method, request_headers, params, json_body = _prepare_request(
+                method,
+                headers,
+                payload,
+                full_url,
+            )
+            try:
+                data, _status_code = await async_request_json(
+                    client,
+                    request_method,
+                    full_url,
+                    headers=request_headers,
+                    params=params,
+                    json_body=json_body,
+                )
+            except UpstreamHTTPError as exc:
+                logger.warning(
+                    "Upstream HTTP error",
+                    extra={"url": full_url, "status_code": exc.status_code},
+                )
+                raise
+            records = _extract_records(data, full_url)
+
+        _apply_request_metadata(records, payload.params)
+        total_records += len(records)
+        for chunk in _iter_chunks(records, chunk_size):
+            yield chunk
+
+    if is_mock:
+        print(f"[load_records] URL={full_url}, records={total_records}")
+    duration_ms = int((time.monotonic() - start) * 1000)
+    logger.info(
+        "async_iter_records",
+        extra={"url": full_url, "records": total_records, "duration_ms": duration_ms},
+    )
+
+
 async def async_load_records(
     remote_source: RemoteSource,
     client: httpx.AsyncClient | None = None,
@@ -533,3 +614,19 @@ async def async_load_records(
         return await _async_load_records_with_client(remote_source, client)
     async with httpx.AsyncClient(timeout=timeout) as async_client:
         return await _async_load_records_with_client(remote_source, async_client)
+
+
+async def async_iter_records(
+    remote_source: RemoteSource,
+    chunk_size: int,
+    client: httpx.AsyncClient | None = None,
+    *,
+    timeout: float = 30.0,
+) -> AsyncIterator[List[Dict[str, Any]]]:
+    if client is not None:
+        async for chunk in _async_iter_records_with_client(remote_source, client, chunk_size):
+            yield chunk
+        return
+    async with httpx.AsyncClient(timeout=timeout) as async_client:
+        async for chunk in _async_iter_records_with_client(remote_source, async_client, chunk_size):
+            yield chunk

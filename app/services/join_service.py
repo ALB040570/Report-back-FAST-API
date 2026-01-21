@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.models.remote_source import RemoteSource
@@ -124,6 +125,13 @@ async def _resolve_joins(remote_source: RemoteSource) -> List[Dict[str, Any]]:
     return joins
 
 
+@dataclass(frozen=True)
+class PreparedJoin:
+    join: Dict[str, Any]
+    rows: List[Dict[str, Any]]
+    target_source_id: Optional[str]
+
+
 async def resolve_joins(remote_source: RemoteSource) -> List[Dict[str, Any]]:
     return await _resolve_joins(remote_source)
 
@@ -172,6 +180,76 @@ async def apply_joins(
             {
                 "joinId": join.get("id"),
                 "targetSourceId": target_source_id,
+                "baseBefore": base_before,
+                "baseAfter": len(rows),
+                "matchedRows": matched_rows,
+            }
+        )
+
+    debug["sampleKeys"]["afterJoin"] = list(rows[0].keys()) if rows else []
+    return rows, debug
+
+
+async def prepare_joins(
+    remote_source: RemoteSource,
+    joins_override: Optional[List[Dict[str, Any]]] = None,
+    max_records: Optional[int] = None,
+) -> List[PreparedJoin]:
+    joins = joins_override if joins_override is not None else await _resolve_joins(remote_source)
+    prepared: List[PreparedJoin] = []
+    for join in joins:
+        target_source_id = join.get("targetSourceId")
+        join_rows: List[Dict[str, Any]] = []
+        if target_source_id:
+            config = await get_source_config(target_source_id)
+            if config:
+                join_source = RemoteSource(
+                    id=str(target_source_id),
+                    method=config.method,
+                    url=config.url,
+                    body=config.body,
+                    headers=config.headers,
+                    rawBody=config.raw_body,
+                )
+                join_rows = await async_load_records(join_source)
+                if max_records and len(join_rows) > max_records:
+                    raise ValueError(f"Records limit exceeded: {len(join_rows)} > {max_records}")
+        prepared.append(
+            PreparedJoin(
+                join=join,
+                rows=join_rows,
+                target_source_id=target_source_id,
+            )
+        )
+    return prepared
+
+
+def apply_prepared_joins(
+    base_rows: List[Dict[str, Any]],
+    prepared_joins: List[PreparedJoin],
+    max_records: Optional[int] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    debug: Dict[str, Any] = {
+        "joinsApplied": [],
+        "sampleKeys": {
+            "beforeJoin": list(base_rows[0].keys()) if base_rows else [],
+            "afterJoin": [],
+        },
+    }
+    if not prepared_joins:
+        debug["sampleKeys"]["afterJoin"] = list(base_rows[0].keys()) if base_rows else []
+        return base_rows, debug
+
+    rows = base_rows
+    for prepared in prepared_joins:
+        base_before = len(rows)
+        rows, matched_rows = _apply_join(rows, prepared.rows, prepared.join)
+        if max_records and len(rows) > max_records:
+            raise ValueError(f"Records limit exceeded: {len(rows)} > {max_records}")
+        debug["joinsApplied"].append(
+            {
+                "joinId": prepared.join.get("id"),
+                "targetSourceId": prepared.target_source_id,
                 "baseBefore": base_before,
                 "baseAfter": len(rows),
                 "matchedRows": matched_rows,
