@@ -9,7 +9,11 @@ from app.models.view import ChartConfig, ViewResponse
 from app.models.view_request import ViewRequest
 from app.services.data_source_client import async_iter_records, async_load_records, get_records_limit
 from app.services.filter_service import apply_filters
-from app.services.join_service import apply_joins, apply_prepared_joins, prepare_joins
+from app.services.join_service import (
+    apply_joins,
+    apply_prepared_join_lookups,
+    prepare_joins_streaming,
+)
 from app.services.pivot_streaming import StreamingPivotAggregator
 from app.services.view_service import build_view
 
@@ -197,7 +201,15 @@ async def _build_report_view_streaming(
     settings = get_settings()
     max_records = get_records_limit()
     chunk_size = settings.report_chunk_size
-    prepared_joins = await prepare_joins(payload.remoteSource, max_records=max_records)
+    prepared_joins = await prepare_joins_streaming(
+        payload.remoteSource,
+        chunk_size,
+        max_records=max_records,
+        lookup_max_keys=settings.report_join_lookup_max_keys,
+        paging_allowlist=settings.report_paging_allowlist,
+        paging_max_pages=settings.report_paging_max_pages,
+        paging_force=settings.report_upstream_paging,
+    )
     join_debug = _init_join_debug(prepared_joins)
     filter_debug = None
 
@@ -215,13 +227,21 @@ async def _build_report_view_streaming(
     update_duration_ms = 0
     pipeline_started = time.monotonic()
 
-    async for records_chunk in async_iter_records(payload.remoteSource, chunk_size):
+    paging_stats: dict = {}
+    async for records_chunk in async_iter_records(
+        payload.remoteSource,
+        chunk_size,
+        paging_allowlist=settings.report_paging_allowlist,
+        paging_max_pages=settings.report_paging_max_pages,
+        paging_force=settings.report_upstream_paging,
+        stats=paging_stats,
+    ):
         total_records += len(records_chunk)
         _enforce_records_limit(total_records, max_records, "load_records")
 
         if prepared_joins:
             joins_started = time.monotonic()
-            joined_chunk, chunk_join_debug = apply_prepared_joins(
+            joined_chunk, chunk_join_debug = apply_prepared_join_lookups(
                 records_chunk,
                 prepared_joins,
                 max_records=max_records,
@@ -256,6 +276,9 @@ async def _build_report_view_streaming(
     total_duration_ms = int((time.monotonic() - pipeline_started) * 1000)
     load_duration_ms = max(0, total_duration_ms - join_duration_ms - filter_duration_ms - update_duration_ms)
 
+    paging_enabled = paging_stats.get("paging_enabled", False)
+    paging_pages = paging_stats.get("paging_pages", 0)
+
     logger.info(
         "report.view.load_records",
         extra={
@@ -263,6 +286,8 @@ async def _build_report_view_streaming(
             "requestId": request_id,
             "records": total_records,
             "duration_ms": load_duration_ms,
+            "paging_enabled": paging_enabled,
+            "paging_pages": paging_pages,
         },
     )
 
@@ -274,6 +299,7 @@ async def _build_report_view_streaming(
             "recordsBefore": total_records,
             "recordsAfter": total_joined,
             "duration_ms": join_duration_ms,
+            "join_streaming_enabled": True,
         },
     )
 

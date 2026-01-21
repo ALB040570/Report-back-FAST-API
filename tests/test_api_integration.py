@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 
@@ -19,12 +20,18 @@ class ApiIntegrationTests(unittest.TestCase):
         self._async_reports = os.environ.get("ASYNC_REPORTS")
         self._report_streaming = os.environ.get("REPORT_STREAMING")
         self._report_chunk_size = os.environ.get("REPORT_CHUNK_SIZE")
+        self._report_paging_allowlist = os.environ.get("REPORT_PAGING_ALLOWLIST")
+        self._report_paging_max_pages = os.environ.get("REPORT_PAGING_MAX_PAGES")
+        self._report_upstream_paging = os.environ.get("REPORT_UPSTREAM_PAGING")
         os.environ["REPORT_REMOTE_ALLOWLIST"] = "example.com"
         os.environ.pop("REDIS_URL", None)
         os.environ["UPSTREAM_BASE_URL"] = "http://example.com"
         os.environ.pop("REPORT_MAX_RECORDS", None)
         os.environ["ASYNC_REPORTS"] = "0"
         os.environ["REPORT_STREAMING"] = "0"
+        os.environ.pop("REPORT_PAGING_ALLOWLIST", None)
+        os.environ.pop("REPORT_PAGING_MAX_PAGES", None)
+        os.environ.pop("REPORT_UPSTREAM_PAGING", None)
         record_cache._STORE.clear()
 
     def tearDown(self) -> None:
@@ -56,6 +63,18 @@ class ApiIntegrationTests(unittest.TestCase):
             os.environ.pop("REPORT_CHUNK_SIZE", None)
         else:
             os.environ["REPORT_CHUNK_SIZE"] = self._report_chunk_size
+        if self._report_paging_allowlist is None:
+            os.environ.pop("REPORT_PAGING_ALLOWLIST", None)
+        else:
+            os.environ["REPORT_PAGING_ALLOWLIST"] = self._report_paging_allowlist
+        if self._report_paging_max_pages is None:
+            os.environ.pop("REPORT_PAGING_MAX_PAGES", None)
+        else:
+            os.environ["REPORT_PAGING_MAX_PAGES"] = self._report_paging_max_pages
+        if self._report_upstream_paging is None:
+            os.environ.pop("REPORT_UPSTREAM_PAGING", None)
+        else:
+            os.environ["REPORT_UPSTREAM_PAGING"] = self._report_upstream_paging
 
     def _base_payload(self) -> dict:
         return {
@@ -124,7 +143,25 @@ class ApiIntegrationTests(unittest.TestCase):
             router.__exit__(None, None, None)
 
     def test_report_view_streaming_matches_sync(self) -> None:
-        router = self._mock_upstream()
+        records = [
+            {"cls": "A", "year": 2024, "value": 10, "count": 1},
+            {"cls": "B", "year": 2024, "value": 20, "count": 2},
+            {"cls": "B", "year": 2023, "value": 5, "count": 1},
+        ]
+        router = respx.mock(assert_all_called=True)
+        router.__enter__()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content.decode("utf-8")) if request.content else {}
+            paging = payload.get("paging")
+            if not paging:
+                return httpx.Response(200, json={"result": {"records": records}})
+            offset = int(paging.get("offset", 0))
+            limit = int(paging.get("limit", len(records)))
+            page = records[offset : offset + limit]
+            return httpx.Response(200, json={"result": {"records": page}})
+
+        router.post("https://example.com/dtj/api/report").mock(side_effect=handler)
         try:
             payload = self._base_payload()
             os.environ["REPORT_STREAMING"] = "0"
@@ -132,7 +169,12 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(sync_response.status_code, 200)
             os.environ["REPORT_STREAMING"] = "1"
             os.environ["REPORT_CHUNK_SIZE"] = "1"
-            streaming_response = asyncio.run(self._post("/api/report/view", payload))
+            os.environ["REPORT_PAGING_ALLOWLIST"] = "example.com"
+            paged_payload = dict(payload)
+            paged_payload["remoteSource"] = dict(payload["remoteSource"])
+            paged_payload["remoteSource"]["body"] = dict(payload["remoteSource"]["body"])
+            paged_payload["remoteSource"]["body"]["paging"] = {"limit": 1, "offset": 0}
+            streaming_response = asyncio.run(self._post("/api/report/view", paged_payload))
             self.assertEqual(streaming_response.status_code, 200)
             self.assertEqual(sync_response.json(), streaming_response.json())
         finally:

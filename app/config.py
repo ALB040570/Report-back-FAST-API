@@ -21,6 +21,10 @@ class Settings:
     report_chunk_size: int
     report_streaming_max_groups: int
     report_streaming_max_unique_values_per_dim: int
+    report_paging_allowlist: Optional[str]
+    report_paging_max_pages: int
+    report_upstream_paging: bool
+    report_join_lookup_max_keys: int
     upstream_base_url: str
     upstream_url: str
     upstream_timeout: float
@@ -94,6 +98,10 @@ def get_settings() -> Settings:
         report_streaming_max_unique_values_per_dim=_get_int_allow_zero(
             "REPORT_STREAMING_MAX_UNIQUE_VALUES_PER_DIM", 0
         ),
+        report_paging_allowlist=os.getenv("REPORT_PAGING_ALLOWLIST"),
+        report_paging_max_pages=_get_int("REPORT_PAGING_MAX_PAGES", 2000),
+        report_upstream_paging=_get_bool("REPORT_UPSTREAM_PAGING", False),
+        report_join_lookup_max_keys=_get_int("REPORT_JOIN_LOOKUP_MAX_KEYS", 2_000_000),
         upstream_base_url=os.getenv("UPSTREAM_BASE_URL", ""),
         upstream_url=os.getenv("UPSTREAM_URL", ""),
         upstream_timeout=_get_float("UPSTREAM_TIMEOUT", 30.0),

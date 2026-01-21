@@ -20,11 +20,17 @@ class ReportAsyncModeTests(unittest.TestCase):
             "REPORT_JOB_QUEUE_MAX_SIZE": os.environ.get("REPORT_JOB_QUEUE_MAX_SIZE"),
             "REPORT_STREAMING": os.environ.get("REPORT_STREAMING"),
             "REPORT_CHUNK_SIZE": os.environ.get("REPORT_CHUNK_SIZE"),
+            "REPORT_PAGING_ALLOWLIST": os.environ.get("REPORT_PAGING_ALLOWLIST"),
+            "REPORT_PAGING_MAX_PAGES": os.environ.get("REPORT_PAGING_MAX_PAGES"),
+            "REPORT_UPSTREAM_PAGING": os.environ.get("REPORT_UPSTREAM_PAGING"),
         }
         os.environ["REPORT_REMOTE_ALLOWLIST"] = "example.com"
         os.environ["UPSTREAM_BASE_URL"] = "http://example.com"
         os.environ.pop("REDIS_URL", None)
         os.environ["REPORT_STREAMING"] = "0"
+        os.environ.pop("REPORT_PAGING_ALLOWLIST", None)
+        os.environ.pop("REPORT_PAGING_MAX_PAGES", None)
+        os.environ.pop("REPORT_UPSTREAM_PAGING", None)
 
     def tearDown(self) -> None:
         for key, value in self._env.items():

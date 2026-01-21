@@ -107,6 +107,14 @@ REPORT_STREAMING_MAX_GROUPS — лимит количества групп (row/
 
 REPORT_STREAMING_MAX_UNIQUE_VALUES_PER_DIM — лимит уникальных значений по измерению (0 = без лимита).
 
+REPORT_PAGING_ALLOWLIST — allowlist хостов для paging при REPORT_STREAMING=1 (формат: host1,host2).
+
+REPORT_PAGING_MAX_PAGES — максимальное число страниц при paging (превышение вернёт 422).
+
+REPORT_UPSTREAM_PAGING — dev override для paging без allowlist (0/1).
+
+REPORT_JOIN_LOOKUP_MAX_KEYS — лимит уникальных ключей в lookup для join-источников (streaming-режим).
+
 REPORT_JOB_TTL_SECONDS — TTL для report job и результатов.
 
 REPORT_JOB_MAX_RESULT_BYTES — лимит размера результата (больше лимита пишется в файл).

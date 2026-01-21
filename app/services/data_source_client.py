@@ -157,6 +157,28 @@ def _get_remote_allowlist() -> str | None:
     return os.getenv("REPORT_REMOTE_ALLOWLIST") or os.getenv("UPSTREAM_ALLOWLIST")
 
 
+def _get_paging_allowlist() -> str | None:
+    return os.getenv("REPORT_PAGING_ALLOWLIST")
+
+
+def _get_paging_max_pages() -> int:
+    value = os.getenv("REPORT_PAGING_MAX_PAGES")
+    if not value:
+        return 2000
+    try:
+        parsed = int(value)
+    except ValueError:
+        return 2000
+    return parsed if parsed > 0 else 2000
+
+
+def _get_upstream_paging_enabled() -> bool:
+    value = os.getenv("REPORT_UPSTREAM_PAGING")
+    if not value:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _is_full_url_allowed(url: str, allowlist: str | None) -> bool:
     if not allowlist:
         return False
@@ -170,6 +192,25 @@ def _is_full_url_allowed(url: str, allowlist: str | None) -> bool:
                 return True
         else:
             if entry.lower() == target_host:
+                return True
+    return False
+
+
+def _is_host_allowed(url: str, allowlist: str | None) -> bool:
+    if not allowlist:
+        return False
+    parsed_url = urlparse(url)
+    host = parsed_url.hostname.lower() if parsed_url.hostname else ""
+    netloc = parsed_url.netloc.lower()
+    entries = [item.strip() for item in allowlist.split(",") if item.strip()]
+    for entry in entries:
+        if entry.startswith("http://") or entry.startswith("https://"):
+            parsed = urlparse(entry)
+            if parsed.scheme and parsed.netloc.lower() == netloc:
+                return True
+        else:
+            entry_lower = entry.lower()
+            if entry_lower == netloc or entry_lower == host:
                 return True
     return False
 
@@ -214,6 +255,48 @@ def _apply_request_metadata(records: List[Dict[str, Any]], params: Dict[str, Any
             continue
         for key, value in metadata.items():
             record.setdefault(key, value)
+
+
+def _extract_paging_config(payload: Any) -> Dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    paging = payload.get("paging")
+    if isinstance(paging, dict):
+        limit = paging.get("limit")
+        offset = paging.get("offset", 0)
+        try:
+            limit_val = int(limit)
+            offset_val = int(offset)
+        except (TypeError, ValueError):
+            limit_val = 0
+            offset_val = 0
+        if limit_val > 0:
+            return {"mode": "offset", "limit": limit_val, "offset": offset_val}
+    cursor = payload.get("cursor")
+    if isinstance(cursor, dict):
+        field = cursor.get("field")
+        if field:
+            return {
+                "mode": "cursor",
+                "field": str(field),
+                "value": cursor.get("value"),
+            }
+    return None
+
+
+def _update_paging_payload(payload: Dict[str, Any], config: Dict[str, Any], value: Any) -> Dict[str, Any]:
+    updated = dict(payload)
+    if config.get("mode") == "offset":
+        updated["paging"] = {
+            "limit": config.get("limit"),
+            "offset": value,
+        }
+    else:
+        updated["cursor"] = {
+            "field": config.get("field"),
+            "value": value,
+        }
+    return updated
 
 
 def _extract_records(data: Any, full_url: str) -> List[Dict[str, Any]]:
@@ -535,7 +618,14 @@ async def _async_iter_records_with_client(
     remote_source: RemoteSource,
     client: httpx.AsyncClient,
     chunk_size: int,
+    *,
+    paging_allowlist: str | None = None,
+    paging_max_pages: int | None = None,
+    paging_force: bool = False,
+    stats: Dict[str, Any] | None = None,
 ) -> AsyncIterator[List[Dict[str, Any]]]:
+    if stats is None:
+        stats = {}
     local_found, local_records = _extract_local_records(remote_source)
     if local_found:
         _enforce_records_limit(local_records, get_records_limit())
@@ -562,8 +652,70 @@ async def _async_iter_records_with_client(
         return
 
     total_records = 0
+    paging_enabled = False
+    paging_pages = 0
+    paging_allow = paging_allowlist or _get_paging_allowlist()
+    paging_max_pages = paging_max_pages or _get_paging_max_pages()
+    paging_force = paging_force or _get_upstream_paging_enabled()
+    paging_allowed_for_host = paging_force or _is_host_allowed(full_url, paging_allow)
     start = time.monotonic()
     for payload in request_payloads:
+        paging_config = _extract_paging_config(payload.body)
+        if paging_config and paging_allowed_for_host:
+            paging_enabled = True
+            page_value = paging_config.get("offset", 0)
+            for _page in range(paging_max_pages):
+                paging_pages += 1
+                request_body = _update_paging_payload(payload.body, paging_config, page_value)
+                page_payload = RequestPayload(body=request_body, params=payload.params)
+                if is_mock:
+                    records = _build_mock_records(remote_source, Filters())
+                else:
+                    request_method, request_headers, params, json_body = _prepare_request(
+                        method,
+                        headers,
+                        page_payload,
+                        full_url,
+                    )
+                    try:
+                        data, _status_code = await async_request_json(
+                            client,
+                            request_method,
+                            full_url,
+                            headers=request_headers,
+                            params=params,
+                            json_body=json_body,
+                        )
+                    except UpstreamHTTPError as exc:
+                        logger.warning(
+                            "Upstream HTTP error",
+                            extra={"url": full_url, "status_code": exc.status_code},
+                        )
+                        raise
+                    records = _extract_records(data, full_url)
+
+                if not records:
+                    break
+
+                _apply_request_metadata(records, page_payload.params)
+                total_records += len(records)
+                for chunk in _iter_chunks(records, chunk_size):
+                    yield chunk
+
+                if paging_config.get("mode") == "offset":
+                    page_value += paging_config.get("limit", 0)
+                else:
+                    field = paging_config.get("field")
+                    if not field:
+                        break
+                    cursor_value = records[-1].get(field)
+                    if cursor_value is None:
+                        break
+                    page_value = cursor_value
+            else:
+                raise ValueError(f"Paging max pages exceeded: {paging_max_pages}")
+            continue
+
         if is_mock:
             records = _build_mock_records(remote_source, Filters())
         else:
@@ -600,8 +752,17 @@ async def _async_iter_records_with_client(
     duration_ms = int((time.monotonic() - start) * 1000)
     logger.info(
         "async_iter_records",
-        extra={"url": full_url, "records": total_records, "duration_ms": duration_ms},
+        extra={
+            "url": full_url,
+            "records": total_records,
+            "duration_ms": duration_ms,
+            "paging_enabled": paging_enabled,
+            "paging_pages": paging_pages,
+        },
     )
+    stats["paging_enabled"] = paging_enabled
+    stats["paging_pages"] = paging_pages
+    stats["records"] = total_records
 
 
 async def async_load_records(
@@ -622,11 +783,31 @@ async def async_iter_records(
     client: httpx.AsyncClient | None = None,
     *,
     timeout: float = 30.0,
+    paging_allowlist: str | None = None,
+    paging_max_pages: int | None = None,
+    paging_force: bool = False,
+    stats: Dict[str, Any] | None = None,
 ) -> AsyncIterator[List[Dict[str, Any]]]:
     if client is not None:
-        async for chunk in _async_iter_records_with_client(remote_source, client, chunk_size):
+        async for chunk in _async_iter_records_with_client(
+            remote_source,
+            client,
+            chunk_size,
+            paging_allowlist=paging_allowlist,
+            paging_max_pages=paging_max_pages,
+            paging_force=paging_force,
+            stats=stats,
+        ):
             yield chunk
         return
     async with httpx.AsyncClient(timeout=timeout) as async_client:
-        async for chunk in _async_iter_records_with_client(remote_source, async_client, chunk_size):
+        async for chunk in _async_iter_records_with_client(
+            remote_source,
+            async_client,
+            chunk_size,
+            paging_allowlist=paging_allowlist,
+            paging_max_pages=paging_max_pages,
+            paging_force=paging_force,
+            stats=stats,
+        ):
             yield chunk

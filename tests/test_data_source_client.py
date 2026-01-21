@@ -1,9 +1,13 @@
 import asyncio
+import json
 import os
 import unittest
 
+import httpx
+import respx
+
 from app.models.remote_source import RemoteSource
-from app.services.data_source_client import async_load_records, build_request_payloads
+from app.services.data_source_client import async_iter_records, async_load_records, build_request_payloads
 
 
 class DataSourceClientTests(unittest.TestCase):
@@ -87,6 +91,75 @@ class DataSourceClientTests(unittest.TestCase):
                 os.environ["REPORT_REMOTE_ALLOWLIST"] = allowlist
             if upstream_allowlist is not None:
                 os.environ["UPSTREAM_ALLOWLIST"] = upstream_allowlist
+
+    def test_async_iter_records_paging_requests_multiple_pages(self) -> None:
+        remote_source = RemoteSource(
+            url="https://example.com/data",
+            method="POST",
+            body={"paging": {"limit": 2, "offset": 0}},
+        )
+        router = respx.mock(assert_all_called=True)
+        router.__enter__()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content.decode("utf-8")) if request.content else {}
+            paging = payload.get("paging") or {}
+            offset = paging.get("offset", 0)
+            if offset == 0:
+                records = [{"id": 1}, {"id": 2}]
+            elif offset == 2:
+                records = [{"id": 3}, {"id": 4}]
+            else:
+                records = []
+            return httpx.Response(200, json={"result": {"records": records}})
+
+        route = router.post("https://example.com/data").mock(side_effect=handler)
+        try:
+            async def run() -> list[list[dict]]:
+                chunks: list[list[dict]] = []
+                async for chunk in async_iter_records(
+                    remote_source,
+                    chunk_size=2,
+                    paging_allowlist="example.com",
+                    paging_max_pages=10,
+                ):
+                    chunks.append(chunk)
+                return chunks
+
+            chunks = asyncio.run(run())
+            self.assertEqual(len(route.calls), 3)
+            self.assertEqual(len(chunks), 2)
+            self.assertEqual(len(chunks[0]), 2)
+            self.assertEqual(len(chunks[1]), 2)
+        finally:
+            router.__exit__(None, None, None)
+
+    def test_async_iter_records_paging_disabled_without_allowlist(self) -> None:
+        remote_source = RemoteSource(
+            url="https://example.com/data",
+            method="POST",
+            body={"paging": {"limit": 2, "offset": 0}},
+        )
+        router = respx.mock(assert_all_called=True)
+        router.__enter__()
+        route = router.post("https://example.com/data").mock(
+            return_value=httpx.Response(
+                200,
+                json={"result": {"records": [{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}]}},
+            )
+        )
+        try:
+            async def run() -> list[list[dict]]:
+                chunks: list[list[dict]] = []
+                async for chunk in async_iter_records(remote_source, chunk_size=2):
+                    chunks.append(chunk)
+                return chunks
+
+            chunks = asyncio.run(run())
+            self.assertEqual(len(route.calls), 1)
+            self.assertEqual(len(chunks), 2)
+        finally:
+            router.__exit__(None, None, None)
 
 
 if __name__ == "__main__":
