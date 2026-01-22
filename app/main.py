@@ -185,7 +185,7 @@ async def build_report_filters(payload: ViewRequest, request: Request, limit: in
         cache_hit = joined_records is not None
         if joined_records is None:
             load_started = time.monotonic()
-            records = await async_load_records(payload.remoteSource)
+            records = await async_load_records(payload.remoteSource, payload_filters=payload.filters)
             _enforce_records_limit(len(records), max_records, "load_records")
             logger.info(
                 "report.filters.load_records",
@@ -320,7 +320,7 @@ async def build_report_details(payload: Dict[str, Any], request: Request) -> Dic
         cache_hit = joined_records is not None
         if joined_records is None:
             load_started = time.monotonic()
-            records = await async_load_records(view_payload.remoteSource)
+            records = await async_load_records(view_payload.remoteSource, payload_filters=view_payload.filters)
             _enforce_records_limit(len(records), max_records, "load_records")
             logger.info(
                 "report.details.load_records",

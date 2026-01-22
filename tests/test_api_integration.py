@@ -26,6 +26,11 @@ class ApiIntegrationTests(unittest.TestCase):
         self._report_paging_allowlist = os.environ.get("REPORT_PAGING_ALLOWLIST")
         self._report_paging_max_pages = os.environ.get("REPORT_PAGING_MAX_PAGES")
         self._report_upstream_paging = os.environ.get("REPORT_UPSTREAM_PAGING")
+        self._pushdown_enabled = os.environ.get("REPORT_UPSTREAM_PUSHDOWN")
+        self._pushdown_allowlist = os.environ.get("REPORT_PUSHDOWN_ALLOWLIST")
+        self._pushdown_max_filters = os.environ.get("REPORT_PUSHDOWN_MAX_FILTERS")
+        self._pushdown_max_in_values = os.environ.get("REPORT_PUSHDOWN_MAX_IN_VALUES")
+        self._pushdown_safe_only = os.environ.get("REPORT_PUSHDOWN_SAFE_ONLY")
         os.environ["REPORT_REMOTE_ALLOWLIST"] = "example.com"
         os.environ.pop("REDIS_URL", None)
         os.environ["UPSTREAM_BASE_URL"] = "http://example.com"
@@ -38,6 +43,11 @@ class ApiIntegrationTests(unittest.TestCase):
         os.environ.pop("REPORT_PAGING_ALLOWLIST", None)
         os.environ.pop("REPORT_PAGING_MAX_PAGES", None)
         os.environ.pop("REPORT_UPSTREAM_PAGING", None)
+        os.environ["REPORT_UPSTREAM_PUSHDOWN"] = "0"
+        os.environ.pop("REPORT_PUSHDOWN_ALLOWLIST", None)
+        os.environ.pop("REPORT_PUSHDOWN_MAX_FILTERS", None)
+        os.environ.pop("REPORT_PUSHDOWN_MAX_IN_VALUES", None)
+        os.environ.pop("REPORT_PUSHDOWN_SAFE_ONLY", None)
         record_cache._STORE.clear()
 
     def tearDown(self) -> None:
@@ -93,6 +103,26 @@ class ApiIntegrationTests(unittest.TestCase):
             os.environ.pop("REPORT_UPSTREAM_PAGING", None)
         else:
             os.environ["REPORT_UPSTREAM_PAGING"] = self._report_upstream_paging
+        if self._pushdown_enabled is None:
+            os.environ.pop("REPORT_UPSTREAM_PUSHDOWN", None)
+        else:
+            os.environ["REPORT_UPSTREAM_PUSHDOWN"] = self._pushdown_enabled
+        if self._pushdown_allowlist is None:
+            os.environ.pop("REPORT_PUSHDOWN_ALLOWLIST", None)
+        else:
+            os.environ["REPORT_PUSHDOWN_ALLOWLIST"] = self._pushdown_allowlist
+        if self._pushdown_max_filters is None:
+            os.environ.pop("REPORT_PUSHDOWN_MAX_FILTERS", None)
+        else:
+            os.environ["REPORT_PUSHDOWN_MAX_FILTERS"] = self._pushdown_max_filters
+        if self._pushdown_max_in_values is None:
+            os.environ.pop("REPORT_PUSHDOWN_MAX_IN_VALUES", None)
+        else:
+            os.environ["REPORT_PUSHDOWN_MAX_IN_VALUES"] = self._pushdown_max_in_values
+        if self._pushdown_safe_only is None:
+            os.environ.pop("REPORT_PUSHDOWN_SAFE_ONLY", None)
+        else:
+            os.environ["REPORT_PUSHDOWN_SAFE_ONLY"] = self._pushdown_safe_only
 
     def _base_payload(self) -> dict:
         return {

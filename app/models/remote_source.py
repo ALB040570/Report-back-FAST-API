@@ -17,6 +17,7 @@ class RemoteSource(BaseModel):
 
     body: Any = None
     headers: Optional[Dict[str, Any]] = None
+    pushdown: Optional[Dict[str, Any]] = None
 
     joins: Optional[List[Dict[str, Any]]] = None
     rawBody: Optional[str] = None

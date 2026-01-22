@@ -25,6 +25,11 @@ class Settings:
     report_paging_max_pages: int
     report_upstream_paging: bool
     report_join_lookup_max_keys: int
+    report_upstream_pushdown: bool
+    report_pushdown_allowlist: Optional[str]
+    report_pushdown_max_filters: int
+    report_pushdown_max_in_values: int
+    report_pushdown_safe_only: bool
     upstream_base_url: str
     upstream_url: str
     upstream_timeout: float
@@ -102,6 +107,11 @@ def get_settings() -> Settings:
         report_paging_max_pages=_get_int("REPORT_PAGING_MAX_PAGES", 2000),
         report_upstream_paging=_get_bool("REPORT_UPSTREAM_PAGING", False),
         report_join_lookup_max_keys=_get_int("REPORT_JOIN_LOOKUP_MAX_KEYS", 2_000_000),
+        report_upstream_pushdown=_get_bool("REPORT_UPSTREAM_PUSHDOWN", False),
+        report_pushdown_allowlist=os.getenv("REPORT_PUSHDOWN_ALLOWLIST"),
+        report_pushdown_max_filters=_get_int("REPORT_PUSHDOWN_MAX_FILTERS", 50),
+        report_pushdown_max_in_values=_get_int("REPORT_PUSHDOWN_MAX_IN_VALUES", 200),
+        report_pushdown_safe_only=_get_bool("REPORT_PUSHDOWN_SAFE_ONLY", True),
         upstream_base_url=os.getenv("UPSTREAM_BASE_URL", ""),
         upstream_url=os.getenv("UPSTREAM_URL", ""),
         upstream_timeout=_get_float("UPSTREAM_TIMEOUT", 30.0),

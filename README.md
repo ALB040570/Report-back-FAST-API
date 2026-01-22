@@ -127,6 +127,16 @@ REPORT_JOB_QUEUE_MAX_SIZE — лимит очереди report-задач (пр�
 
 REPORT_JOB_POLL_INTERVAL_MS — рекомендованный интервал polling на фронте.
 
+REPORT_UPSTREAM_PUSHDOWN — включает pushdown фильтров/paging в upstream (0/1). По умолчанию 0.
+
+REPORT_PUSHDOWN_ALLOWLIST — allowlist хостов для pushdown (host1,host2).
+
+REPORT_PUSHDOWN_MAX_FILTERS — максимум фильтров для pushdown.
+
+REPORT_PUSHDOWN_MAX_IN_VALUES — максимум значений для IN фильтра в pushdown.
+
+REPORT_PUSHDOWN_SAFE_ONLY — разрешать pushdown только для безопасных фильтров (0/1). По умолчанию 1.
+
 OTEL_ENABLED — включает OpenTelemetry tracing (0/1). По умолчанию 0.
 
 OTEL_SERVICE_NAME — имя сервиса для tracing (по умолчанию report-back-fast-api).
@@ -156,6 +166,29 @@ Observability
 - Tracing в консоль: OTEL_ENABLED=1.
 - Tracing + OTLP: OTEL_ENABLED=1 и OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318.
   При NO_NETWORK=1 OTLP отключается (warning) и используется console exporter.
+
+Upstream pushdown (Stage 3B)
+
+- По умолчанию выключен: REPORT_UPSTREAM_PUSHDOWN=0.
+- Включение: REPORT_UPSTREAM_PUSHDOWN=1 + REPORT_PUSHDOWN_ALLOWLIST + remoteSource.pushdown.enabled=true.
+- Работает только для mode=jsonrpc_params, paging.strategy=offset, ops=eq|in|range.
+- Безопасный режим (REPORT_PUSHDOWN_SAFE_ONLY=1) пушдаунит только глобальные фильтры из payload.
+- Paging pushdown применяется только в streaming-режиме.
+
+Пример структуры remoteSource.pushdown:
+
+{
+  "enabled": true,
+  "mode": "jsonrpc_params",
+  "paging": {
+    "strategy": "offset",
+    "limitPath": "body.params.0.limit",
+    "offsetPath": "body.params.0.offset"
+  },
+  "filters": [
+    { "filterKey": "objLocation", "op": "eq", "targetPath": "body.params.0.objLocation" }
+  ]
+}
 
 4. Проверка работы сервиса
    docker ps

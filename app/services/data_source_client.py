@@ -9,6 +9,12 @@ from typing import Any, AsyncIterator, Dict, Iterable, List
 
 import json
 import httpx
+from app.observability.metrics import record_pushdown_request
+from app.services.pushdown import (
+    build_body_with_pushdown,
+    host_allowed,
+    parse_pushdown,
+)
 from app.services.upstream_client import UpstreamHTTPError, async_request_json, build_full_url, request_json
 
 
@@ -185,6 +191,46 @@ def _get_upstream_paging_enabled() -> bool:
     value = os.getenv("REPORT_UPSTREAM_PAGING")
     if not value:
         return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_pushdown_enabled() -> bool:
+    value = os.getenv("REPORT_UPSTREAM_PUSHDOWN")
+    if not value:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_pushdown_allowlist() -> str | None:
+    return os.getenv("REPORT_PUSHDOWN_ALLOWLIST")
+
+
+def _get_pushdown_max_filters() -> int:
+    value = os.getenv("REPORT_PUSHDOWN_MAX_FILTERS")
+    if not value:
+        return 50
+    try:
+        parsed = int(value)
+    except ValueError:
+        return 50
+    return parsed if parsed > 0 else 50
+
+
+def _get_pushdown_max_in_values() -> int:
+    value = os.getenv("REPORT_PUSHDOWN_MAX_IN_VALUES")
+    if not value:
+        return 200
+    try:
+        parsed = int(value)
+    except ValueError:
+        return 200
+    return parsed if parsed > 0 else 200
+
+
+def _get_pushdown_safe_only() -> bool:
+    value = os.getenv("REPORT_PUSHDOWN_SAFE_ONLY")
+    if value is None:
+        return True
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -563,6 +609,8 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
 async def _async_load_records_with_client(
     remote_source: RemoteSource,
     client: httpx.AsyncClient,
+    payload_filters: Filters | Dict[str, Any] | None = None,
+    stats: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     local_found, local_records = _extract_local_records(remote_source)
     if local_found:
@@ -587,16 +635,65 @@ async def _async_load_records_with_client(
     if not request_payloads:
         return []
 
+    if stats is None:
+        stats = {}
+    stats.setdefault("pushdown_enabled", False)
+    stats.setdefault("pushdown_filters_applied", 0)
+    stats.setdefault("pushdown_paging_applied", False)
+
+    pushdown_cfg = parse_pushdown(remote_source)
+    pushdown_env_enabled = _get_pushdown_enabled()
+    pushdown_allowlist = _get_pushdown_allowlist()
+    pushdown_allowed_for_host = host_allowed(full_url, pushdown_allowlist) if full_url else False
+    pushdown_active = bool(pushdown_env_enabled and pushdown_cfg and pushdown_allowed_for_host)
+    pushdown_safe_only = _get_pushdown_safe_only()
+    pushdown_max_filters = _get_pushdown_max_filters()
+    pushdown_max_in_values = _get_pushdown_max_in_values()
+    if not pushdown_env_enabled:
+        pushdown_reason = "disabled_env"
+    elif not pushdown_cfg:
+        pushdown_reason = "no_config"
+    elif not pushdown_allowed_for_host:
+        pushdown_reason = "not_allowlisted"
+    else:
+        pushdown_reason = "applied"
+
     records_all: List[Dict[str, Any]] = []
     start = time.monotonic()
     for payload in request_payloads:
+        request_payload = payload
+        if pushdown_active and pushdown_cfg:
+            try:
+                request_body, applied_filters, paging_applied = build_body_with_pushdown(
+                    payload.body,
+                    payload_filters,
+                    pushdown_cfg,
+                    None,
+                    max_filters=pushdown_max_filters,
+                    max_in_values=pushdown_max_in_values,
+                    safe_only=pushdown_safe_only,
+                )
+                request_payload = RequestPayload(body=request_body, params=payload.params)
+                stats["pushdown_enabled"] = True
+                stats["pushdown_filters_applied"] = applied_filters
+                stats["pushdown_paging_applied"] = paging_applied
+                record_pushdown_request(True, "applied")
+            except Exception as exc:
+                logger.warning(
+                    "pushdown_failed_fallback",
+                    extra={"url": full_url, "error": str(exc)},
+                )
+                record_pushdown_request(True, "fallback_error")
+                request_payload = payload
+        else:
+            record_pushdown_request(False, pushdown_reason)
         if is_mock:
             records = _build_mock_records(remote_source, Filters())
         else:
             request_method, request_headers, params, json_body = _prepare_request(
                 method,
                 headers,
-                payload,
+                request_payload,
                 full_url,
             )
             try:
@@ -635,6 +732,7 @@ async def _async_iter_records_with_client(
     client: httpx.AsyncClient,
     chunk_size: int,
     *,
+    payload_filters: Filters | Dict[str, Any] | None = None,
     paging_allowlist: str | None = None,
     paging_max_pages: int | None = None,
     paging_force: bool = False,
@@ -667,6 +765,27 @@ async def _async_iter_records_with_client(
     if not request_payloads:
         return
 
+    stats.setdefault("pushdown_enabled", False)
+    stats.setdefault("pushdown_filters_applied", 0)
+    stats.setdefault("pushdown_paging_applied", False)
+
+    pushdown_cfg = parse_pushdown(remote_source)
+    pushdown_env_enabled = _get_pushdown_enabled()
+    pushdown_allowlist = _get_pushdown_allowlist()
+    pushdown_allowed_for_host = host_allowed(full_url, pushdown_allowlist) if full_url else False
+    pushdown_active = bool(pushdown_env_enabled and pushdown_cfg and pushdown_allowed_for_host)
+    pushdown_safe_only = _get_pushdown_safe_only()
+    pushdown_max_filters = _get_pushdown_max_filters()
+    pushdown_max_in_values = _get_pushdown_max_in_values()
+    if not pushdown_env_enabled:
+        pushdown_reason = "disabled_env"
+    elif not pushdown_cfg:
+        pushdown_reason = "no_config"
+    elif not pushdown_allowed_for_host:
+        pushdown_reason = "not_allowlisted"
+    else:
+        pushdown_reason = "applied"
+
     total_records = 0
     paging_enabled = False
     paging_pages = 0
@@ -677,6 +796,11 @@ async def _async_iter_records_with_client(
     start = time.monotonic()
     for payload in request_payloads:
         paging_config = _extract_paging_config(payload.body)
+        paging_pushdown_allowed = bool(
+            pushdown_active and pushdown_cfg and pushdown_cfg.paging and paging_allowed_for_host
+        )
+        if paging_config is None and paging_pushdown_allowed:
+            paging_config = {"mode": "offset", "limit": chunk_size, "offset": 0}
         if paging_config and paging_allowed_for_host:
             paging_enabled = True
             page_value = paging_config.get("offset", 0)
@@ -684,13 +808,45 @@ async def _async_iter_records_with_client(
                 paging_pages += 1
                 request_body = _update_paging_payload(payload.body, paging_config, page_value)
                 page_payload = RequestPayload(body=request_body, params=payload.params)
+                request_payload = page_payload
+                if pushdown_active and pushdown_cfg:
+                    page_state = None
+                    if paging_config.get("mode") == "offset":
+                        page_state = {
+                            "limit": paging_config.get("limit"),
+                            "offset": page_value,
+                        }
+                    try:
+                        request_body, applied_filters, paging_applied = build_body_with_pushdown(
+                            page_payload.body,
+                            payload_filters,
+                            pushdown_cfg,
+                            page_state,
+                            max_filters=pushdown_max_filters,
+                            max_in_values=pushdown_max_in_values,
+                            safe_only=pushdown_safe_only,
+                        )
+                        request_payload = RequestPayload(body=request_body, params=page_payload.params)
+                        stats["pushdown_enabled"] = True
+                        stats["pushdown_filters_applied"] = applied_filters
+                        stats["pushdown_paging_applied"] = paging_applied
+                        record_pushdown_request(True, "applied")
+                    except Exception as exc:
+                        logger.warning(
+                            "pushdown_failed_fallback",
+                            extra={"url": full_url, "error": str(exc)},
+                        )
+                        record_pushdown_request(True, "fallback_error")
+                        request_payload = page_payload
+                else:
+                    record_pushdown_request(False, pushdown_reason)
                 if is_mock:
                     records = _build_mock_records(remote_source, Filters())
                 else:
                     request_method, request_headers, params, json_body = _prepare_request(
                         method,
                         headers,
-                        page_payload,
+                        request_payload,
                         full_url,
                     )
                     try:
@@ -713,7 +869,7 @@ async def _async_iter_records_with_client(
                 if not records:
                     break
 
-                _apply_request_metadata(records, page_payload.params)
+                _apply_request_metadata(records, request_payload.params)
                 total_records += len(records)
                 for chunk in _iter_chunks(records, chunk_size):
                     yield chunk
@@ -735,10 +891,36 @@ async def _async_iter_records_with_client(
         if is_mock:
             records = _build_mock_records(remote_source, Filters())
         else:
+            request_payload = payload
+            if pushdown_active and pushdown_cfg:
+                try:
+                    request_body, applied_filters, paging_applied = build_body_with_pushdown(
+                        payload.body,
+                        payload_filters,
+                        pushdown_cfg,
+                        None,
+                        max_filters=pushdown_max_filters,
+                        max_in_values=pushdown_max_in_values,
+                        safe_only=pushdown_safe_only,
+                    )
+                    request_payload = RequestPayload(body=request_body, params=payload.params)
+                    stats["pushdown_enabled"] = True
+                    stats["pushdown_filters_applied"] = applied_filters
+                    stats["pushdown_paging_applied"] = paging_applied
+                    record_pushdown_request(True, "applied")
+                except Exception as exc:
+                    logger.warning(
+                        "pushdown_failed_fallback",
+                        extra={"url": full_url, "error": str(exc)},
+                    )
+                    record_pushdown_request(True, "fallback_error")
+                    request_payload = payload
+            else:
+                record_pushdown_request(False, pushdown_reason)
             request_method, request_headers, params, json_body = _prepare_request(
                 method,
                 headers,
-                payload,
+                request_payload,
                 full_url,
             )
             try:
@@ -758,7 +940,7 @@ async def _async_iter_records_with_client(
                 raise
             records = _extract_records(data, full_url)
 
-        _apply_request_metadata(records, payload.params)
+        _apply_request_metadata(records, request_payload.params)
         total_records += len(records)
         for chunk in _iter_chunks(records, chunk_size):
             yield chunk
@@ -786,11 +968,23 @@ async def async_load_records(
     client: httpx.AsyncClient | None = None,
     *,
     timeout: float = 30.0,
+    payload_filters: Filters | Dict[str, Any] | None = None,
+    stats: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     if client is not None:
-        return await _async_load_records_with_client(remote_source, client)
+        return await _async_load_records_with_client(
+            remote_source,
+            client,
+            payload_filters=payload_filters,
+            stats=stats,
+        )
     async with httpx.AsyncClient(timeout=timeout) as async_client:
-        return await _async_load_records_with_client(remote_source, async_client)
+        return await _async_load_records_with_client(
+            remote_source,
+            async_client,
+            payload_filters=payload_filters,
+            stats=stats,
+        )
 
 
 async def async_iter_records(
@@ -799,6 +993,7 @@ async def async_iter_records(
     client: httpx.AsyncClient | None = None,
     *,
     timeout: float = 30.0,
+    payload_filters: Filters | Dict[str, Any] | None = None,
     paging_allowlist: str | None = None,
     paging_max_pages: int | None = None,
     paging_force: bool = False,
@@ -809,6 +1004,7 @@ async def async_iter_records(
             remote_source,
             client,
             chunk_size,
+            payload_filters=payload_filters,
             paging_allowlist=paging_allowlist,
             paging_max_pages=paging_max_pages,
             paging_force=paging_force,
@@ -821,6 +1017,7 @@ async def async_iter_records(
             remote_source,
             async_client,
             chunk_size,
+            payload_filters=payload_filters,
             paging_allowlist=paging_allowlist,
             paging_max_pages=paging_max_pages,
             paging_force=paging_force,

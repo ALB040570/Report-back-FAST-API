@@ -42,11 +42,19 @@ async def build_report_view_response(
     max_records = get_records_limit()
 
     load_started = time.monotonic()
+    stats: dict = {}
     with tracer.start_as_current_span("load_records") as span:
-        records = await async_load_records(payload.remoteSource)
+        records = await async_load_records(
+            payload.remoteSource,
+            payload_filters=payload.filters,
+            stats=stats,
+        )
         span.set_attribute("streaming_enabled", False)
         span.set_attribute("records_count", len(records))
         span.set_attribute("pages_count", 1 if records else 0)
+        span.set_attribute("pushdown_enabled", bool(stats.get("pushdown_enabled")))
+        span.set_attribute("pushdown_filters_applied", int(stats.get("pushdown_filters_applied") or 0))
+        span.set_attribute("pushdown_paging_applied", bool(stats.get("pushdown_paging_applied")))
     _enforce_records_limit(len(records), max_records, "load_records")
     logger.info(
         "report.view.load_records",
@@ -252,6 +260,7 @@ async def _build_report_view_streaming(
         async for records_chunk in async_iter_records(
             payload.remoteSource,
             chunk_size,
+            payload_filters=payload.filters,
             paging_allowlist=settings.report_paging_allowlist,
             paging_max_pages=settings.report_paging_max_pages,
             paging_force=settings.report_upstream_paging,
@@ -308,6 +317,12 @@ async def _build_report_view_streaming(
         load_span.set_attribute("streaming_enabled", True)
         load_span.set_attribute("records_count", total_records)
         load_span.set_attribute("pages_count", pages_count)
+        load_span.set_attribute("pushdown_enabled", bool(paging_stats.get("pushdown_enabled")))
+        load_span.set_attribute(
+            "pushdown_filters_applied",
+            int(paging_stats.get("pushdown_filters_applied") or 0),
+        )
+        load_span.set_attribute("pushdown_paging_applied", bool(paging_stats.get("pushdown_paging_applied")))
 
     total_duration_ms = int((time.monotonic() - pipeline_started) * 1000)
     load_duration_ms = max(0, total_duration_ms - join_duration_ms - filter_duration_ms - update_duration_ms)

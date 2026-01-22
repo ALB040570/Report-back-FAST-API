@@ -40,6 +40,12 @@ REPORT_VIEW_GROUPS_TOTAL = Counter(
     "Total groups emitted for report view",
 )
 
+REPORT_PUSHDOWN_REQUESTS_TOTAL = Counter(
+    "report_pushdown_requests_total",
+    "Total upstream pushdown attempts",
+    ["enabled", "reason"],
+)
+
 REPORT_JOBS_QUEUE_SIZE = Gauge(
     "report_jobs_queue_size",
     "Current report jobs queue size",
@@ -76,6 +82,10 @@ def record_report_view_metrics(
     groups_total = rows_count * (cols_count if cols_count > 0 else 1) if rows_count > 0 else 0
     if groups_total > 0:
         REPORT_VIEW_GROUPS_TOTAL.inc(groups_total)
+
+
+def record_pushdown_request(enabled: bool, reason: str) -> None:
+    REPORT_PUSHDOWN_REQUESTS_TOTAL.labels(enabled="1" if enabled else "0", reason=reason).inc()
 
 
 def set_report_jobs_queue_size(value: int) -> None:
