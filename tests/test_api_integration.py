@@ -20,6 +20,9 @@ class ApiIntegrationTests(unittest.TestCase):
         self._async_reports = os.environ.get("ASYNC_REPORTS")
         self._report_streaming = os.environ.get("REPORT_STREAMING")
         self._report_chunk_size = os.environ.get("REPORT_CHUNK_SIZE")
+        self._report_streaming_max_groups = os.environ.get("REPORT_STREAMING_MAX_GROUPS")
+        self._report_streaming_max_unique = os.environ.get("REPORT_STREAMING_MAX_UNIQUE_VALUES_PER_DIM")
+        self._report_join_lookup_max_keys = os.environ.get("REPORT_JOIN_LOOKUP_MAX_KEYS")
         self._report_paging_allowlist = os.environ.get("REPORT_PAGING_ALLOWLIST")
         self._report_paging_max_pages = os.environ.get("REPORT_PAGING_MAX_PAGES")
         self._report_upstream_paging = os.environ.get("REPORT_UPSTREAM_PAGING")
@@ -29,6 +32,9 @@ class ApiIntegrationTests(unittest.TestCase):
         os.environ.pop("REPORT_MAX_RECORDS", None)
         os.environ["ASYNC_REPORTS"] = "0"
         os.environ["REPORT_STREAMING"] = "0"
+        os.environ["REPORT_STREAMING_MAX_GROUPS"] = "200000"
+        os.environ["REPORT_STREAMING_MAX_UNIQUE_VALUES_PER_DIM"] = "0"
+        os.environ["REPORT_JOIN_LOOKUP_MAX_KEYS"] = "2000000"
         os.environ.pop("REPORT_PAGING_ALLOWLIST", None)
         os.environ.pop("REPORT_PAGING_MAX_PAGES", None)
         os.environ.pop("REPORT_UPSTREAM_PAGING", None)
@@ -63,6 +69,18 @@ class ApiIntegrationTests(unittest.TestCase):
             os.environ.pop("REPORT_CHUNK_SIZE", None)
         else:
             os.environ["REPORT_CHUNK_SIZE"] = self._report_chunk_size
+        if self._report_streaming_max_groups is None:
+            os.environ.pop("REPORT_STREAMING_MAX_GROUPS", None)
+        else:
+            os.environ["REPORT_STREAMING_MAX_GROUPS"] = self._report_streaming_max_groups
+        if self._report_streaming_max_unique is None:
+            os.environ.pop("REPORT_STREAMING_MAX_UNIQUE_VALUES_PER_DIM", None)
+        else:
+            os.environ["REPORT_STREAMING_MAX_UNIQUE_VALUES_PER_DIM"] = self._report_streaming_max_unique
+        if self._report_join_lookup_max_keys is None:
+            os.environ.pop("REPORT_JOIN_LOOKUP_MAX_KEYS", None)
+        else:
+            os.environ["REPORT_JOIN_LOOKUP_MAX_KEYS"] = self._report_join_lookup_max_keys
         if self._report_paging_allowlist is None:
             os.environ.pop("REPORT_PAGING_ALLOWLIST", None)
         else:
