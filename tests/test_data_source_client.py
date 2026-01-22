@@ -19,12 +19,13 @@ class DataSourceClientTests(unittest.TestCase):
                 {"date": "2026-01-01", "periodType": 12},
             ],
             "extra": "value",
+            "splitParams": True,
         }
         payloads = build_request_payloads(body)
         self.assertEqual(len(payloads), 2)
         self.assertEqual(payloads[0].body["method"], "data/loadPlan")
         self.assertEqual(payloads[0].body["extra"], "value")
-        self.assertEqual(payloads[0].body["params"], {"date": "2025-01-01", "periodType": 11})
+        self.assertEqual(payloads[0].body["params"], [{"date": "2025-01-01", "periodType": 11}])
         self.assertEqual(payloads[0].params, {"date": "2025-01-01", "periodType": 11})
 
     def test_build_request_payloads_requests_list(self) -> None:
@@ -37,6 +38,7 @@ class DataSourceClientTests(unittest.TestCase):
                     "body": {"method": "data/loadFact", "extra": True},
                 },
             ],
+            "splitParams": True,
         }
         payloads = build_request_payloads(body)
         self.assertEqual(len(payloads), 2)
@@ -56,6 +58,21 @@ class DataSourceClientTests(unittest.TestCase):
         self.assertEqual(payloads[0].body["params"], [0])
         self.assertIsNone(payloads[0].params)
 
+    def test_build_request_payloads_params_list_no_split(self) -> None:
+        body = {
+            "method": "data/loadPlan",
+            "params": [
+                {"date": "2025-01-01", "periodType": 11},
+                {"date": "2026-01-01", "periodType": 12},
+            ],
+            "splitParams": False,
+        }
+        payloads = build_request_payloads(body)
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0].body["params"], body["params"])
+        self.assertIsNone(payloads[0].params)
+        self.assertNotIn("splitParams", payloads[0].body)
+
     def test_async_load_records_from_batch_results(self) -> None:
         remote_source = RemoteSource(
             url="mock://batch",
@@ -74,6 +91,21 @@ class DataSourceClientTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["value"], 1)
         self.assertEqual(records[0]["requestDate"], "2025-01-01")
+
+    def test_async_load_records_split_params_metadata(self) -> None:
+        remote_source = RemoteSource(
+            url="mock://split",
+            method="POST",
+            body={
+                "method": "data/loadPlan",
+                "params": [{"date": "2025-01-01", "periodType": 11}],
+                "splitParams": True,
+            },
+        )
+        records = asyncio.run(async_load_records(remote_source))
+        self.assertTrue(records)
+        self.assertEqual(records[0]["requestDate"], "2025-01-01")
+        self.assertEqual(records[0]["requestPeriodType"], 11)
 
     def test_async_load_records_blocks_private_without_allowlist(self) -> None:
         allowlist = os.environ.pop("REPORT_REMOTE_ALLOWLIST", None)

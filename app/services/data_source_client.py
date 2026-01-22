@@ -72,19 +72,25 @@ def build_request_payloads(body: Any) -> List[RequestPayload]:
     if not isinstance(body, dict):
         return [RequestPayload(body=body, params=None)]
 
-    requests = body.get("requests")
-    if isinstance(requests, list):
-        return _build_request_payloads_from_requests(body, requests)
+    split_params = bool(body.get("splitParams"))
+    cleaned_body = {**body}
+    cleaned_body.pop("splitParams", None)
 
-    params_list = body.get("params")
+    requests = cleaned_body.get("requests")
+    if isinstance(requests, list):
+        return _build_request_payloads_from_requests(cleaned_body, requests)
+
+    params_list = cleaned_body.get("params")
     if isinstance(params_list, list):
         if any(not isinstance(entry, dict) for entry in params_list):
-            return [RequestPayload(body=body, params=None)]
-        return _build_request_payloads_from_params(body, params_list)
+            return [RequestPayload(body=cleaned_body, params=None)]
+        if split_params:
+            return _build_request_payloads_from_params(cleaned_body, params_list)
+        return [RequestPayload(body=cleaned_body, params=None)]
 
-    params = body.get("params")
+    params = cleaned_body.get("params")
     request_params = params if isinstance(params, dict) else None
-    return [RequestPayload(body=body, params=request_params)]
+    return [RequestPayload(body=cleaned_body, params=request_params)]
 
 
 def _build_request_payloads_from_params(
@@ -96,12 +102,13 @@ def _build_request_payloads_from_params(
     base_body = {**body}
     base_body.pop("params", None)
     base_body.pop("requests", None)
+    base_body.pop("splitParams", None)
 
     payloads: List[RequestPayload] = []
     for entry in params_list:
         if not isinstance(entry, dict):
             continue
-        request_body = {**base_body, "params": entry}
+        request_body = {**base_body, "params": [entry]}
         payloads.append(RequestPayload(body=request_body, params=entry))
     return payloads
 
@@ -114,6 +121,7 @@ def _build_request_payloads_from_requests(
         return []
     base_body = {**body}
     base_body.pop("requests", None)
+    base_body.pop("splitParams", None)
 
     payloads: List[RequestPayload] = []
     for entry in requests_list:
@@ -126,6 +134,7 @@ def _build_request_payloads_from_requests(
         if isinstance(entry_body, dict):
             cleaned_body = {**entry_body}
             cleaned_body.pop("__joins", None)
+            cleaned_body.pop("splitParams", None)
             request_body.update(cleaned_body)
             params_from_body = cleaned_body.get("params")
             if isinstance(params_from_body, dict):
@@ -234,8 +243,15 @@ def _is_private_host(host: str | None) -> bool:
     )
 
 
-def _build_request_metadata(params: Dict[str, Any] | None) -> Dict[str, Any]:
+def _build_request_metadata(params: Any) -> Dict[str, Any]:
     if not params:
+        return {}
+    if isinstance(params, list):
+        if params and isinstance(params[0], dict):
+            params = params[0]
+        else:
+            return {}
+    if not isinstance(params, dict):
         return {}
     metadata: Dict[str, Any] = {}
     for key, value in params.items():
@@ -246,7 +262,7 @@ def _build_request_metadata(params: Dict[str, Any] | None) -> Dict[str, Any]:
     return metadata
 
 
-def _apply_request_metadata(records: List[Dict[str, Any]], params: Dict[str, Any] | None) -> None:
+def _apply_request_metadata(records: List[Dict[str, Any]], params: Any) -> None:
     metadata = _build_request_metadata(params)
     if not metadata:
         return
