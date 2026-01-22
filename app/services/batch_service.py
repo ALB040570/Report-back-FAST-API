@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -23,8 +23,7 @@ _RESULTS_DIR = os.path.join(os.getcwd(), "batch_results")
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 def _build_upstream_payload(
     params: Dict[str, Any],

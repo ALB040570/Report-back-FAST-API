@@ -127,6 +127,14 @@ REPORT_JOB_QUEUE_MAX_SIZE — лимит очереди report-задач (пр�
 
 REPORT_JOB_POLL_INTERVAL_MS — рекомендованный интервал polling на фронте.
 
+OTEL_ENABLED — включает OpenTelemetry tracing (0/1). По умолчанию 0.
+
+OTEL_SERVICE_NAME — имя сервиса для tracing (по умолчанию report-back-fast-api).
+
+OTEL_EXPORTER_OTLP_ENDPOINT — endpoint для OTLP exporter. Если NO_NETWORK=1, OTLP не используется.
+
+/metrics — endpoint Prometheus метрик (всегда доступен).
+
 Async report mode (Stage 1)
 
 - Включение: ASYNC_REPORTS=1.
@@ -141,6 +149,13 @@ Async report mode (Stage 1)
 - Очередь и статусы не переживают рестарт процесса.
 - При нескольких воркерах (multi-process) in-memory очередь/статусы не шарятся.
 - Для продакшена рекомендуется Redis job_store и отдельный worker (следующий этап).
+
+Observability
+
+- Метрики: GET /metrics (доступен всегда).
+- Tracing в консоль: OTEL_ENABLED=1.
+- Tracing + OTLP: OTEL_ENABLED=1 и OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318.
+  При NO_NETWORK=1 OTLP отключается (warning) и используется console exporter.
 
 4. Проверка работы сервиса
    docker ps

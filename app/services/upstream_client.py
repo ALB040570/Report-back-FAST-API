@@ -1,11 +1,13 @@
 import asyncio
 import logging
 import random
+import time
 from typing import Any, Dict, Optional, Tuple
 
 import httpx
 import requests
 
+from app.observability.metrics import record_upstream_request
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ def request_json(
     json_body: Any = None,
     timeout: float = 30.0,
 ) -> Any:
+    started = time.monotonic()
     try:
         response = requests.request(
             method=method,
@@ -52,7 +55,9 @@ def request_json(
             timeout=timeout,
         )
     except requests.RequestException as exc:
+        record_upstream_request("error", time.monotonic() - started)
         raise RuntimeError(f"Upstream request failed: {exc}") from exc
+    record_upstream_request(str(response.status_code), time.monotonic() - started)
     response.raise_for_status()
     return response.json()
 
@@ -94,6 +99,7 @@ async def async_request_json(
 ) -> Tuple[Any, int]:
     attempt = 0
     while True:
+        started = time.monotonic()
         try:
             response = await client.request(
                 method=method,
@@ -103,6 +109,7 @@ async def async_request_json(
                 json=json_body,
             )
         except httpx.RequestError as exc:
+            record_upstream_request("error", time.monotonic() - started)
             if attempt >= _MAX_ATTEMPTS - 1:
                 raise RuntimeError(f"Upstream request failed: {exc}") from exc
             delay = _compute_backoff(attempt, None)
@@ -112,6 +119,7 @@ async def async_request_json(
             continue
 
         if response.status_code in _RETRY_STATUSES:
+            record_upstream_request(str(response.status_code), time.monotonic() - started)
             if attempt >= _MAX_ATTEMPTS - 1:
                 payload = _response_payload(response)
                 raise UpstreamHTTPError(
@@ -129,7 +137,9 @@ async def async_request_json(
             continue
 
         if response.is_success:
+            record_upstream_request(str(response.status_code), time.monotonic() - started)
             return _response_payload(response), response.status_code
 
         payload = _response_payload(response)
+        record_upstream_request(str(response.status_code), time.monotonic() - started)
         raise UpstreamHTTPError(response.status_code, f"Upstream error {response.status_code}: {payload}")

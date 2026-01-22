@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import time
@@ -7,17 +8,27 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.api.batch import router as batch_router
 from app.config import get_settings
 from app.models.view_request import ViewRequest
 from app.models.view import ViewResponse
+from app.observability.metrics import record_http_request, set_report_jobs_queue_size
+from app.observability.otel import configure_otel
+from app.observability.request_context import set_request_id
 from app.services.data_source_client import async_load_records, get_records_limit
 from app.services.detail_service import build_details
 from app.services.filter_service import apply_filters, collect_filter_options
 from app.services.join_service import apply_joins, resolve_joins
 from app.services.record_cache import build_records_cache_key, get_cached_records, set_cached_records
-from app.services.report_job_service import create_report_job, delete_report_job, get_report_job, QueueFullError
+from app.services.report_job_service import (
+    QueueFullError,
+    create_report_job,
+    delete_report_job,
+    get_report_job,
+    get_report_job_store,
+)
 from app.services.report_view_builder import build_report_view_response
 
 
@@ -28,6 +39,7 @@ app = FastAPI(
 )
 
 logger = logging.getLogger(__name__)
+configure_otel(app)
 
 
 def _enforce_records_limit(count: int, limit: int | None, stage: str) -> None:
@@ -38,6 +50,53 @@ def _enforce_records_limit(count: int, limit: int | None, stage: str) -> None:
             status_code=422,
             detail=f"Records limit exceeded after {stage}: {count} > {limit}",
         )
+
+
+def _extract_request_id_from_body(body: bytes, content_type: str) -> str | None:
+    if not body or "application/json" not in (content_type or ""):
+        return None
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    meta = payload.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    return meta.get("requestId") or meta.get("request_id")
+
+
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    started = time.monotonic()
+    request_id = request.headers.get("X-Request-ID")
+    if request_id is None:
+        body_bytes = await request.body()
+        if body_bytes:
+            request._body = body_bytes
+            request_id = _extract_request_id_from_body(body_bytes, request.headers.get("content-type", ""))
+    request.state.request_id = request_id
+    set_request_id(request_id)
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        duration = time.monotonic() - started
+        route = request.scope.get("route")
+        route_path = route.path if route else request.url.path
+        status_code = response.status_code if response else 500
+        record_http_request(request.method, route_path, status_code, duration)
+        logger.info(
+            "http.request",
+            extra={
+                "requestId": request_id,
+                "status": status_code,
+                "duration_ms": int(duration * 1000),
+            },
+        )
+        set_request_id(None)
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,6 +118,18 @@ async def health_check() -> Dict[str, Any]:
     return {"status": "ok"}
 
 
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
+    queue_size = 0
+    try:
+        queue_size = await get_report_job_store().queue_size()
+    except Exception:
+        queue_size = 0
+    set_report_jobs_queue_size(queue_size)
+    payload = generate_latest()
+    return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
+
+
 @app.post("/api/report/view", response_model=ViewResponse, tags=["report"])
 async def build_report_view(payload: ViewRequest, request: Request) -> ViewResponse:
     """
@@ -68,7 +139,7 @@ async def build_report_view(payload: ViewRequest, request: Request) -> ViewRespo
     3. Возвращает view + простейший chartConfig.
     """
     settings = get_settings()
-    request_id = request.headers.get("X-Request-ID")
+    request_id = getattr(request.state, "request_id", None)
     force_sync = request.query_params.get("sync") == "1" or request.headers.get("X-Report-Sync") == "1"
 
     if settings.async_reports and not force_sync:
@@ -103,7 +174,7 @@ async def build_report_filters(payload: ViewRequest, request: Request, limit: in
     Endpoint для взаимозависимых фильтров (cascading filters).
     Возвращает доступные значения для каждого ключа фильтра.
     """
-    request_id = request.headers.get("X-Request-ID")
+    request_id = getattr(request.state, "request_id", None)
     max_records = get_records_limit()
 
     try:
@@ -238,7 +309,7 @@ async def build_report_details(payload: Dict[str, Any], request: Request) -> Dic
     except (TypeError, ValueError):
         offset = 0
 
-    request_id = request.headers.get("X-Request-ID")
+    request_id = getattr(request.state, "request_id", None)
     max_records = get_records_limit()
 
     try:
@@ -308,7 +379,7 @@ async def build_report_details(payload: Dict[str, Any], request: Request) -> Dic
     except Exception as exc:
         logger.exception(
             "Failed to build report details",
-            extra={"templateId": view_payload.templateId},
+            extra={"templateId": view_payload.templateId, "requestId": request_id},
         )
         raise HTTPException(
             status_code=422 if isinstance(exc, ValueError) else 502,

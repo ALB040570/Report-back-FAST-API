@@ -4,6 +4,8 @@ import os
 import time
 from typing import Optional
 
+from app.observability.metrics import record_report_view_metrics
+from app.observability.otel import get_tracer
 from app.config import get_settings
 from app.models.view import ChartConfig, ViewResponse
 from app.models.view_request import ViewRequest
@@ -33,13 +35,18 @@ async def build_report_view_response(
     request_id: str | None = None,
 ) -> ViewResponse:
     settings = get_settings()
+    tracer = get_tracer()
     if settings.report_streaming:
         return await _build_report_view_streaming(payload, request_id)
 
     max_records = get_records_limit()
 
     load_started = time.monotonic()
-    records = await async_load_records(payload.remoteSource)
+    with tracer.start_as_current_span("load_records") as span:
+        records = await async_load_records(payload.remoteSource)
+        span.set_attribute("streaming_enabled", False)
+        span.set_attribute("records_count", len(records))
+        span.set_attribute("pages_count", 1 if records else 0)
     _enforce_records_limit(len(records), max_records, "load_records")
     logger.info(
         "report.view.load_records",
@@ -52,11 +59,14 @@ async def build_report_view_response(
     )
 
     joins_started = time.monotonic()
-    joined_records, join_debug = await apply_joins(
-        records,
-        payload.remoteSource,
-        max_records=max_records,
-    )
+    with tracer.start_as_current_span("apply_joins") as span:
+        joined_records, join_debug = await apply_joins(
+            records,
+            payload.remoteSource,
+            max_records=max_records,
+        )
+        span.set_attribute("streaming_enabled", False)
+        span.set_attribute("records_count", len(joined_records))
     _enforce_records_limit(len(joined_records), max_records, "apply_joins")
     logger.info(
         "report.view.apply_joins",
@@ -70,11 +80,14 @@ async def build_report_view_response(
     )
 
     filters_started = time.monotonic()
-    filtered_records, filter_debug = apply_filters(
-        joined_records,
-        payload.snapshot,
-        payload.filters,
-    )
+    with tracer.start_as_current_span("apply_filters") as span:
+        filtered_records, filter_debug = apply_filters(
+            joined_records,
+            payload.snapshot,
+            payload.filters,
+        )
+        span.set_attribute("streaming_enabled", False)
+        span.set_attribute("records_count", len(filtered_records))
     logger.info(
         "report.view.apply_filters",
         extra={
@@ -87,7 +100,9 @@ async def build_report_view_response(
     )
 
     pivot_started = time.monotonic()
-    pivot_view = await asyncio.to_thread(build_view, filtered_records, payload.snapshot)
+    with tracer.start_as_current_span("build_pivot") as span:
+        pivot_view = await asyncio.to_thread(build_view, filtered_records, payload.snapshot)
+        span.set_attribute("streaming_enabled", False)
     logger.info(
         "report.view.build_pivot",
         extra={
@@ -107,6 +122,7 @@ async def build_report_view_response(
         },
         options={},
     )
+    record_report_view_metrics(len(records), 1 if records else 0, pivot_view)
 
     debug_payload = None
     if os.getenv("REPORT_DEBUG_FILTERS"):
@@ -199,6 +215,7 @@ async def _build_report_view_streaming(
     request_id: str | None = None,
 ) -> ViewResponse:
     settings = get_settings()
+    tracer = get_tracer()
     max_records = get_records_limit()
     chunk_size = settings.report_chunk_size
     prepared_joins = await prepare_joins_streaming(
@@ -228,56 +245,72 @@ async def _build_report_view_streaming(
     pipeline_started = time.monotonic()
 
     paging_stats: dict = {}
-    async for records_chunk in async_iter_records(
-        payload.remoteSource,
-        chunk_size,
-        paging_allowlist=settings.report_paging_allowlist,
-        paging_max_pages=settings.report_paging_max_pages,
-        paging_force=settings.report_upstream_paging,
-        stats=paging_stats,
-    ):
-        total_records += len(records_chunk)
-        _enforce_records_limit(total_records, max_records, "load_records")
+    paging_enabled = False
+    paging_pages = 0
+    pages_count = 0
+    with tracer.start_as_current_span("load_records") as load_span:
+        async for records_chunk in async_iter_records(
+            payload.remoteSource,
+            chunk_size,
+            paging_allowlist=settings.report_paging_allowlist,
+            paging_max_pages=settings.report_paging_max_pages,
+            paging_force=settings.report_upstream_paging,
+            stats=paging_stats,
+        ):
+            total_records += len(records_chunk)
+            _enforce_records_limit(total_records, max_records, "load_records")
 
-        if prepared_joins:
             joins_started = time.monotonic()
-            joined_chunk, chunk_join_debug = apply_prepared_join_lookups(
-                records_chunk,
-                prepared_joins,
-                max_records=max_records,
-            )
+            with tracer.start_as_current_span("apply_joins") as span:
+                if prepared_joins:
+                    joined_chunk, chunk_join_debug = apply_prepared_join_lookups(
+                        records_chunk,
+                        prepared_joins,
+                        max_records=max_records,
+                    )
+                    _merge_join_debug(join_debug, chunk_join_debug)
+                else:
+                    joined_chunk = records_chunk
+                    if not join_debug["sampleKeys"]["beforeJoin"] and records_chunk:
+                        join_debug["sampleKeys"]["beforeJoin"] = list(records_chunk[0].keys())
+                    if not join_debug["sampleKeys"]["afterJoin"] and records_chunk:
+                        join_debug["sampleKeys"]["afterJoin"] = list(records_chunk[0].keys())
+                span.set_attribute("streaming_enabled", True)
+                span.set_attribute("records_count", len(joined_chunk))
             join_duration_ms += int((time.monotonic() - joins_started) * 1000)
-            _merge_join_debug(join_debug, chunk_join_debug)
-        else:
-            joined_chunk = records_chunk
-            if not join_debug["sampleKeys"]["beforeJoin"] and records_chunk:
-                join_debug["sampleKeys"]["beforeJoin"] = list(records_chunk[0].keys())
-            if not join_debug["sampleKeys"]["afterJoin"] and records_chunk:
-                join_debug["sampleKeys"]["afterJoin"] = list(records_chunk[0].keys())
 
-        total_joined += len(joined_chunk)
-        _enforce_records_limit(total_joined, max_records, "apply_joins")
+            total_joined += len(joined_chunk)
+            _enforce_records_limit(total_joined, max_records, "apply_joins")
 
-        filters_started = time.monotonic()
-        filtered_chunk, chunk_filter_debug = apply_filters(
-            joined_chunk,
-            payload.snapshot,
-            payload.filters,
-        )
-        filter_duration_ms += int((time.monotonic() - filters_started) * 1000)
-        filter_debug = _merge_filter_debug(filter_debug, chunk_filter_debug)
+            filters_started = time.monotonic()
+            with tracer.start_as_current_span("apply_filters") as span:
+                filtered_chunk, chunk_filter_debug = apply_filters(
+                    joined_chunk,
+                    payload.snapshot,
+                    payload.filters,
+                )
+                span.set_attribute("streaming_enabled", True)
+                span.set_attribute("records_count", len(filtered_chunk))
+            filter_duration_ms += int((time.monotonic() - filters_started) * 1000)
+            filter_debug = _merge_filter_debug(filter_debug, chunk_filter_debug)
 
-        total_filtered += len(filtered_chunk)
+            total_filtered += len(filtered_chunk)
 
-        update_started = time.monotonic()
-        aggregator.update(filtered_chunk)
-        update_duration_ms += int((time.monotonic() - update_started) * 1000)
+            update_started = time.monotonic()
+            with tracer.start_as_current_span("streaming_pivot") as span:
+                aggregator.update(filtered_chunk)
+                span.set_attribute("streaming_enabled", True)
+                span.set_attribute("records_count", len(filtered_chunk))
+            update_duration_ms += int((time.monotonic() - update_started) * 1000)
+        paging_enabled = paging_stats.get("paging_enabled", False)
+        paging_pages = paging_stats.get("paging_pages", 0)
+        pages_count = paging_pages if paging_enabled else (1 if total_records else 0)
+        load_span.set_attribute("streaming_enabled", True)
+        load_span.set_attribute("records_count", total_records)
+        load_span.set_attribute("pages_count", pages_count)
 
     total_duration_ms = int((time.monotonic() - pipeline_started) * 1000)
     load_duration_ms = max(0, total_duration_ms - join_duration_ms - filter_duration_ms - update_duration_ms)
-
-    paging_enabled = paging_stats.get("paging_enabled", False)
-    paging_pages = paging_stats.get("paging_pages", 0)
 
     logger.info(
         "report.view.load_records",
@@ -315,7 +348,9 @@ async def _build_report_view_streaming(
     )
 
     pivot_started = time.monotonic()
-    pivot_view = await asyncio.to_thread(aggregator.finalize)
+    with tracer.start_as_current_span("build_pivot") as span:
+        pivot_view = await asyncio.to_thread(aggregator.finalize)
+        span.set_attribute("streaming_enabled", True)
     logger.info(
         "report.view.build_pivot",
         extra={
@@ -335,6 +370,7 @@ async def _build_report_view_streaming(
         },
         options={},
     )
+    record_report_view_metrics(total_records, pages_count, pivot_view)
 
     debug_payload = None
     if os.getenv("REPORT_DEBUG_FILTERS"):

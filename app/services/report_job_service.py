@@ -10,6 +10,7 @@ import redis.asyncio as redis
 
 from app.config import get_settings
 from app.models.view_request import ViewRequest
+from app.observability.otel import get_tracer
 from app.services.report_view_builder import build_report_view_response
 
 
@@ -330,26 +331,30 @@ async def _worker_loop() -> None:
             extra={"job_id": job_id, "requestId": request_id, "status": "running"},
         )
         started = time.monotonic()
+        tracer = get_tracer()
         try:
-            payload = job.get("payload") or {}
-            view_payload = ViewRequest(**payload)
-            response = await build_report_view_response(view_payload, request_id)
-            result_payload = response.dict()
-            await _persist_job_result(job_id, result_payload)
-            await store.update_job(
-                job_id,
-                {"status": "done", "finishedAt": _now_iso()},
-                ttl_seconds=settings.report_job_ttl_seconds,
-            )
-            logger.info(
-                "Report job done",
-                extra={
-                    "job_id": job_id,
-                    "requestId": request_id,
-                    "duration_ms": int((time.monotonic() - started) * 1000),
-                    "status": "done",
-                },
-            )
+            with tracer.start_as_current_span("report_job_run") as span:
+                span.set_attribute("async_enabled", True)
+                span.set_attribute("streaming_enabled", settings.report_streaming)
+                payload = job.get("payload") or {}
+                view_payload = ViewRequest(**payload)
+                response = await build_report_view_response(view_payload, request_id)
+                result_payload = response.dict()
+                await _persist_job_result(job_id, result_payload)
+                await store.update_job(
+                    job_id,
+                    {"status": "done", "finishedAt": _now_iso()},
+                    ttl_seconds=settings.report_job_ttl_seconds,
+                )
+                logger.info(
+                    "Report job done",
+                    extra={
+                        "job_id": job_id,
+                        "requestId": request_id,
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                        "status": "done",
+                    },
+                )
         except Exception as exc:
             await store.update_job(
                 job_id,

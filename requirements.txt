@@ -1,7 +1,13 @@
 anyio
 fastapi
 httpx
+opentelemetry-api
+opentelemetry-exporter-otlp
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-httpx
+opentelemetry-sdk
 pydantic<2
+prometheus_client
 redis
 requests
 respx
