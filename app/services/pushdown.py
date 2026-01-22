@@ -148,8 +148,14 @@ def _normalize_filters(filters: Any) -> Dict[str, Dict[str, Any]]:
         payload = filters
     else:
         return {}
+    merged: Dict[str, Dict[str, Any]] = {}
     global_filters = payload.get("globalFilters")
-    return global_filters if isinstance(global_filters, dict) else {}
+    if isinstance(global_filters, dict):
+        merged.update(global_filters)
+    container_filters = payload.get("containerFilters")
+    if isinstance(container_filters, dict):
+        merged.update(container_filters)
+    return merged
 
 
 def _extract_values(values: Any) -> Optional[List[Any]]:

@@ -137,6 +137,8 @@ REPORT_PUSHDOWN_MAX_IN_VALUES — максимум значений для IN ф
 
 REPORT_PUSHDOWN_SAFE_ONLY — разрешать pushdown только для безопасных фильтров (0/1). По умолчанию 1.
 
+REPORT_PUSHDOWN_OVERRIDE — dev override для pushdown без allowlist (0/1). По умолчанию 0.
+
 OTEL_ENABLED — включает OpenTelemetry tracing (0/1). По умолчанию 0.
 
 OTEL_SERVICE_NAME — имя сервиса для tracing (по умолчанию report-back-fast-api).
@@ -172,8 +174,10 @@ Upstream pushdown (Stage 3B)
 - По умолчанию выключен: REPORT_UPSTREAM_PUSHDOWN=0.
 - Включение: REPORT_UPSTREAM_PUSHDOWN=1 + REPORT_PUSHDOWN_ALLOWLIST + remoteSource.pushdown.enabled=true.
 - Работает только для mode=jsonrpc_params, paging.strategy=offset, ops=eq|in|range.
-- Безопасный режим (REPORT_PUSHDOWN_SAFE_ONLY=1) пушдаунит только глобальные фильтры из payload.
+- Безопасный режим (REPORT_PUSHDOWN_SAFE_ONLY=1) пушдаунит только фильтры из globalFilters и containerFilters.
 - Paging pushdown применяется только в streaming-режиме.
+- При 4xx/5xx от upstream в pushdown-режиме выполняется 1 retry без pushdown (fallback).
+- REPORT_PUSHDOWN_OVERRIDE=1 отключает проверку allowlist (dev-only).
 
 Пример структуры remoteSource.pushdown:
 

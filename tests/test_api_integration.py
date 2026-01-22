@@ -31,6 +31,7 @@ class ApiIntegrationTests(unittest.TestCase):
         self._pushdown_max_filters = os.environ.get("REPORT_PUSHDOWN_MAX_FILTERS")
         self._pushdown_max_in_values = os.environ.get("REPORT_PUSHDOWN_MAX_IN_VALUES")
         self._pushdown_safe_only = os.environ.get("REPORT_PUSHDOWN_SAFE_ONLY")
+        self._pushdown_override = os.environ.get("REPORT_PUSHDOWN_OVERRIDE")
         os.environ["REPORT_REMOTE_ALLOWLIST"] = "example.com"
         os.environ.pop("REDIS_URL", None)
         os.environ["UPSTREAM_BASE_URL"] = "http://example.com"
@@ -48,6 +49,7 @@ class ApiIntegrationTests(unittest.TestCase):
         os.environ.pop("REPORT_PUSHDOWN_MAX_FILTERS", None)
         os.environ.pop("REPORT_PUSHDOWN_MAX_IN_VALUES", None)
         os.environ.pop("REPORT_PUSHDOWN_SAFE_ONLY", None)
+        os.environ.pop("REPORT_PUSHDOWN_OVERRIDE", None)
         record_cache._STORE.clear()
 
     def tearDown(self) -> None:
@@ -123,6 +125,10 @@ class ApiIntegrationTests(unittest.TestCase):
             os.environ.pop("REPORT_PUSHDOWN_SAFE_ONLY", None)
         else:
             os.environ["REPORT_PUSHDOWN_SAFE_ONLY"] = self._pushdown_safe_only
+        if self._pushdown_override is None:
+            os.environ.pop("REPORT_PUSHDOWN_OVERRIDE", None)
+        else:
+            os.environ["REPORT_PUSHDOWN_OVERRIDE"] = self._pushdown_override
 
     def _base_payload(self) -> dict:
         return {

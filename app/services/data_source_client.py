@@ -234,6 +234,39 @@ def _get_pushdown_safe_only() -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _get_pushdown_override() -> bool:
+    value = os.getenv("REPORT_PUSHDOWN_OVERRIDE")
+    if not value:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_pushdown_state(
+    full_url: str,
+    remote_source: RemoteSource,
+) -> tuple[Any | None, bool, str, str]:
+    pushdown_cfg = parse_pushdown(remote_source)
+    pushdown_env_enabled = _get_pushdown_enabled()
+    pushdown_allowlist = _get_pushdown_allowlist()
+    pushdown_override = _get_pushdown_override()
+    allowlist_allowed = host_allowed(full_url, pushdown_allowlist) if full_url else False
+    pushdown_allowed_for_host = bool(pushdown_override or allowlist_allowed)
+    override_used = bool(pushdown_override and not allowlist_allowed)
+    if not pushdown_env_enabled:
+        pushdown_reason = "disabled_env"
+    elif not pushdown_cfg:
+        pushdown_reason = "no_config"
+    elif not pushdown_allowed_for_host:
+        pushdown_reason = "not_allowlisted"
+    elif override_used:
+        pushdown_reason = "override_enabled"
+    else:
+        pushdown_reason = "applied"
+    pushdown_active = bool(pushdown_env_enabled and pushdown_cfg and pushdown_allowed_for_host)
+    pushdown_result = "override_enabled" if override_used else "applied"
+    return pushdown_cfg, pushdown_active, pushdown_reason, pushdown_result
+
+
 def _is_full_url_allowed(url: str, allowlist: str | None) -> bool:
     if not allowlist:
         return False
@@ -402,6 +435,94 @@ def _prepare_request(
         request_headers.setdefault("Content-Type", "application/json")
         logger.info("Using method override for GET with body", extra={"url": full_url})
     return request_method, request_headers, params, json_body if request_method != "GET" else None
+
+
+async def _async_fetch_records(
+    client: httpx.AsyncClient,
+    method: str,
+    headers: Dict[str, Any],
+    payload: RequestPayload,
+    full_url: str,
+    *,
+    is_mock: bool,
+    remote_source: RemoteSource,
+) -> List[Dict[str, Any]]:
+    if is_mock:
+        return _build_mock_records(remote_source, Filters())
+    request_method, request_headers, params, json_body = _prepare_request(
+        method,
+        headers,
+        payload,
+        full_url,
+    )
+    try:
+        data, _status_code = await async_request_json(
+            client,
+            request_method,
+            full_url,
+            headers=request_headers,
+            params=params,
+            json_body=json_body,
+        )
+    except UpstreamHTTPError as exc:
+        logger.warning(
+            "Upstream HTTP error",
+            extra={"url": full_url, "status_code": exc.status_code},
+        )
+        raise
+    return _extract_records(data, full_url)
+
+
+async def _async_fetch_with_pushdown_retry(
+    client: httpx.AsyncClient,
+    method: str,
+    headers: Dict[str, Any],
+    request_payload: RequestPayload,
+    *,
+    base_payload: RequestPayload,
+    full_url: str,
+    is_mock: bool,
+    remote_source: RemoteSource,
+    pushdown_attempted: bool,
+    pushdown_applied: bool,
+    pushdown_result: str,
+) -> List[Dict[str, Any]]:
+    try:
+        records = await _async_fetch_records(
+            client,
+            method,
+            headers,
+            request_payload,
+            full_url,
+            is_mock=is_mock,
+            remote_source=remote_source,
+        )
+        if pushdown_attempted:
+            record_pushdown_request(True, pushdown_result)
+        return records
+    except UpstreamHTTPError as exc:
+        if pushdown_attempted and pushdown_applied:
+            logger.warning(
+                "pushdown_failed_fallback",
+                extra={"url": full_url, "status_code": exc.status_code},
+            )
+            record_pushdown_request(True, "failed_fallback")
+            try:
+                records = await _async_fetch_records(
+                    client,
+                    method,
+                    headers,
+                    base_payload,
+                    full_url,
+                    is_mock=is_mock,
+                    remote_source=remote_source,
+                )
+                record_pushdown_request(True, "retry_succeeded")
+                return records
+            except UpstreamHTTPError:
+                record_pushdown_request(True, "retry_failed")
+                raise
+        raise
 
 
 def _looks_like_request_payload(candidate: Any) -> bool:
@@ -641,27 +762,20 @@ async def _async_load_records_with_client(
     stats.setdefault("pushdown_filters_applied", 0)
     stats.setdefault("pushdown_paging_applied", False)
 
-    pushdown_cfg = parse_pushdown(remote_source)
-    pushdown_env_enabled = _get_pushdown_enabled()
-    pushdown_allowlist = _get_pushdown_allowlist()
-    pushdown_allowed_for_host = host_allowed(full_url, pushdown_allowlist) if full_url else False
-    pushdown_active = bool(pushdown_env_enabled and pushdown_cfg and pushdown_allowed_for_host)
+    pushdown_cfg, pushdown_active, pushdown_reason, pushdown_result = _get_pushdown_state(
+        full_url,
+        remote_source,
+    )
     pushdown_safe_only = _get_pushdown_safe_only()
     pushdown_max_filters = _get_pushdown_max_filters()
     pushdown_max_in_values = _get_pushdown_max_in_values()
-    if not pushdown_env_enabled:
-        pushdown_reason = "disabled_env"
-    elif not pushdown_cfg:
-        pushdown_reason = "no_config"
-    elif not pushdown_allowed_for_host:
-        pushdown_reason = "not_allowlisted"
-    else:
-        pushdown_reason = "applied"
 
     records_all: List[Dict[str, Any]] = []
     start = time.monotonic()
     for payload in request_payloads:
         request_payload = payload
+        pushdown_attempted = False
+        pushdown_applied = False
         if pushdown_active and pushdown_cfg:
             try:
                 request_body, applied_filters, paging_applied = build_body_with_pushdown(
@@ -674,10 +788,11 @@ async def _async_load_records_with_client(
                     safe_only=pushdown_safe_only,
                 )
                 request_payload = RequestPayload(body=request_body, params=payload.params)
+                pushdown_attempted = True
+                pushdown_applied = applied_filters > 0 or paging_applied
                 stats["pushdown_enabled"] = True
                 stats["pushdown_filters_applied"] = applied_filters
                 stats["pushdown_paging_applied"] = paging_applied
-                record_pushdown_request(True, "applied")
             except Exception as exc:
                 logger.warning(
                     "pushdown_failed_fallback",
@@ -687,31 +802,19 @@ async def _async_load_records_with_client(
                 request_payload = payload
         else:
             record_pushdown_request(False, pushdown_reason)
-        if is_mock:
-            records = _build_mock_records(remote_source, Filters())
-        else:
-            request_method, request_headers, params, json_body = _prepare_request(
-                method,
-                headers,
-                request_payload,
-                full_url,
-            )
-            try:
-                data, _status_code = await async_request_json(
-                    client,
-                    request_method,
-                    full_url,
-                    headers=request_headers,
-                    params=params,
-                    json_body=json_body,
-                )
-            except UpstreamHTTPError as exc:
-                logger.warning(
-                    "Upstream HTTP error",
-                    extra={"url": full_url, "status_code": exc.status_code},
-                )
-                raise
-            records = _extract_records(data, full_url)
+        records = await _async_fetch_with_pushdown_retry(
+            client,
+            method,
+            headers,
+            request_payload,
+            base_payload=payload,
+            full_url=full_url,
+            is_mock=is_mock,
+            remote_source=remote_source,
+            pushdown_attempted=pushdown_attempted,
+            pushdown_applied=pushdown_applied,
+            pushdown_result=pushdown_result,
+        )
 
         _apply_request_metadata(records, payload.params)
         records_all.extend(records)
@@ -769,22 +872,13 @@ async def _async_iter_records_with_client(
     stats.setdefault("pushdown_filters_applied", 0)
     stats.setdefault("pushdown_paging_applied", False)
 
-    pushdown_cfg = parse_pushdown(remote_source)
-    pushdown_env_enabled = _get_pushdown_enabled()
-    pushdown_allowlist = _get_pushdown_allowlist()
-    pushdown_allowed_for_host = host_allowed(full_url, pushdown_allowlist) if full_url else False
-    pushdown_active = bool(pushdown_env_enabled and pushdown_cfg and pushdown_allowed_for_host)
+    pushdown_cfg, pushdown_active, pushdown_reason, pushdown_result = _get_pushdown_state(
+        full_url,
+        remote_source,
+    )
     pushdown_safe_only = _get_pushdown_safe_only()
     pushdown_max_filters = _get_pushdown_max_filters()
     pushdown_max_in_values = _get_pushdown_max_in_values()
-    if not pushdown_env_enabled:
-        pushdown_reason = "disabled_env"
-    elif not pushdown_cfg:
-        pushdown_reason = "no_config"
-    elif not pushdown_allowed_for_host:
-        pushdown_reason = "not_allowlisted"
-    else:
-        pushdown_reason = "applied"
 
     total_records = 0
     paging_enabled = False
@@ -809,6 +903,8 @@ async def _async_iter_records_with_client(
                 request_body = _update_paging_payload(payload.body, paging_config, page_value)
                 page_payload = RequestPayload(body=request_body, params=payload.params)
                 request_payload = page_payload
+                pushdown_attempted = False
+                pushdown_applied = False
                 if pushdown_active and pushdown_cfg:
                     page_state = None
                     if paging_config.get("mode") == "offset":
@@ -827,10 +923,11 @@ async def _async_iter_records_with_client(
                             safe_only=pushdown_safe_only,
                         )
                         request_payload = RequestPayload(body=request_body, params=page_payload.params)
+                        pushdown_attempted = True
+                        pushdown_applied = applied_filters > 0 or paging_applied
                         stats["pushdown_enabled"] = True
                         stats["pushdown_filters_applied"] = applied_filters
                         stats["pushdown_paging_applied"] = paging_applied
-                        record_pushdown_request(True, "applied")
                     except Exception as exc:
                         logger.warning(
                             "pushdown_failed_fallback",
@@ -840,31 +937,19 @@ async def _async_iter_records_with_client(
                         request_payload = page_payload
                 else:
                     record_pushdown_request(False, pushdown_reason)
-                if is_mock:
-                    records = _build_mock_records(remote_source, Filters())
-                else:
-                    request_method, request_headers, params, json_body = _prepare_request(
-                        method,
-                        headers,
-                        request_payload,
-                        full_url,
-                    )
-                    try:
-                        data, _status_code = await async_request_json(
-                            client,
-                            request_method,
-                            full_url,
-                            headers=request_headers,
-                            params=params,
-                            json_body=json_body,
-                        )
-                    except UpstreamHTTPError as exc:
-                        logger.warning(
-                            "Upstream HTTP error",
-                            extra={"url": full_url, "status_code": exc.status_code},
-                        )
-                        raise
-                    records = _extract_records(data, full_url)
+                records = await _async_fetch_with_pushdown_retry(
+                    client,
+                    method,
+                    headers,
+                    request_payload,
+                    base_payload=page_payload,
+                    full_url=full_url,
+                    is_mock=is_mock,
+                    remote_source=remote_source,
+                    pushdown_attempted=pushdown_attempted,
+                    pushdown_applied=pushdown_applied,
+                    pushdown_result=pushdown_result,
+                )
 
                 if not records:
                     break
@@ -888,57 +973,48 @@ async def _async_iter_records_with_client(
                 raise ValueError(f"Paging max pages exceeded: {paging_max_pages}")
             continue
 
-        if is_mock:
-            records = _build_mock_records(remote_source, Filters())
-        else:
-            request_payload = payload
-            if pushdown_active and pushdown_cfg:
-                try:
-                    request_body, applied_filters, paging_applied = build_body_with_pushdown(
-                        payload.body,
-                        payload_filters,
-                        pushdown_cfg,
-                        None,
-                        max_filters=pushdown_max_filters,
-                        max_in_values=pushdown_max_in_values,
-                        safe_only=pushdown_safe_only,
-                    )
-                    request_payload = RequestPayload(body=request_body, params=payload.params)
-                    stats["pushdown_enabled"] = True
-                    stats["pushdown_filters_applied"] = applied_filters
-                    stats["pushdown_paging_applied"] = paging_applied
-                    record_pushdown_request(True, "applied")
-                except Exception as exc:
-                    logger.warning(
-                        "pushdown_failed_fallback",
-                        extra={"url": full_url, "error": str(exc)},
-                    )
-                    record_pushdown_request(True, "fallback_error")
-                    request_payload = payload
-            else:
-                record_pushdown_request(False, pushdown_reason)
-            request_method, request_headers, params, json_body = _prepare_request(
-                method,
-                headers,
-                request_payload,
-                full_url,
-            )
+        request_payload = payload
+        pushdown_attempted = False
+        pushdown_applied = False
+        if pushdown_active and pushdown_cfg:
             try:
-                data, _status_code = await async_request_json(
-                    client,
-                    request_method,
-                    full_url,
-                    headers=request_headers,
-                    params=params,
-                    json_body=json_body,
+                request_body, applied_filters, paging_applied = build_body_with_pushdown(
+                    payload.body,
+                    payload_filters,
+                    pushdown_cfg,
+                    None,
+                    max_filters=pushdown_max_filters,
+                    max_in_values=pushdown_max_in_values,
+                    safe_only=pushdown_safe_only,
                 )
-            except UpstreamHTTPError as exc:
+                request_payload = RequestPayload(body=request_body, params=payload.params)
+                pushdown_attempted = True
+                pushdown_applied = applied_filters > 0 or paging_applied
+                stats["pushdown_enabled"] = True
+                stats["pushdown_filters_applied"] = applied_filters
+                stats["pushdown_paging_applied"] = paging_applied
+            except Exception as exc:
                 logger.warning(
-                    "Upstream HTTP error",
-                    extra={"url": full_url, "status_code": exc.status_code},
+                    "pushdown_failed_fallback",
+                    extra={"url": full_url, "error": str(exc)},
                 )
-                raise
-            records = _extract_records(data, full_url)
+                record_pushdown_request(True, "fallback_error")
+                request_payload = payload
+        else:
+            record_pushdown_request(False, pushdown_reason)
+        records = await _async_fetch_with_pushdown_retry(
+            client,
+            method,
+            headers,
+            request_payload,
+            base_payload=payload,
+            full_url=full_url,
+            is_mock=is_mock,
+            remote_source=remote_source,
+            pushdown_attempted=pushdown_attempted,
+            pushdown_applied=pushdown_applied,
+            pushdown_result=pushdown_result,
+        )
 
         _apply_request_metadata(records, request_payload.params)
         total_records += len(records)
