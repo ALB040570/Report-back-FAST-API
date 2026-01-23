@@ -11,6 +11,16 @@ from app.services.data_source_client import async_iter_records, async_load_recor
 
 
 class DataSourceClientTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._remote_allowlist = os.environ.get("REPORT_REMOTE_ALLOWLIST")
+        os.environ["REPORT_REMOTE_ALLOWLIST"] = "example.com"
+
+    def tearDown(self) -> None:
+        if self._remote_allowlist is None:
+            os.environ.pop("REPORT_REMOTE_ALLOWLIST", None)
+        else:
+            os.environ["REPORT_REMOTE_ALLOWLIST"] = self._remote_allowlist
+
     def test_build_request_payloads_params_list(self) -> None:
         body = {
             "method": "data/loadPlan",

@@ -18,6 +18,8 @@ class PushdownIntegrationTests(unittest.TestCase):
         self._paging_allowlist = os.environ.get("REPORT_PAGING_ALLOWLIST")
         self._pushdown_safe_only = os.environ.get("REPORT_PUSHDOWN_SAFE_ONLY")
         self._pushdown_override = os.environ.get("REPORT_PUSHDOWN_OVERRIDE")
+        self._remote_allowlist = os.environ.get("REPORT_REMOTE_ALLOWLIST")
+        os.environ["REPORT_REMOTE_ALLOWLIST"] = "example.com,override.example"
 
     def tearDown(self) -> None:
         if self._pushdown_enabled is None:
@@ -40,6 +42,10 @@ class PushdownIntegrationTests(unittest.TestCase):
             os.environ.pop("REPORT_PUSHDOWN_OVERRIDE", None)
         else:
             os.environ["REPORT_PUSHDOWN_OVERRIDE"] = self._pushdown_override
+        if self._remote_allowlist is None:
+            os.environ.pop("REPORT_REMOTE_ALLOWLIST", None)
+        else:
+            os.environ["REPORT_REMOTE_ALLOWLIST"] = self._remote_allowlist
 
     def test_pushdown_applied_with_paging(self) -> None:
         os.environ["REPORT_UPSTREAM_PUSHDOWN"] = "1"

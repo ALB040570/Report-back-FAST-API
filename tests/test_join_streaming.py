@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -17,6 +18,16 @@ from app.services.source_registry import SourceConfig
 
 
 class JoinStreamingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._remote_allowlist = os.environ.get("REPORT_REMOTE_ALLOWLIST")
+        os.environ["REPORT_REMOTE_ALLOWLIST"] = "example.com"
+
+    def tearDown(self) -> None:
+        if self._remote_allowlist is None:
+            os.environ.pop("REPORT_REMOTE_ALLOWLIST", None)
+        else:
+            os.environ["REPORT_REMOTE_ALLOWLIST"] = self._remote_allowlist
+
     def test_prepare_joins_streaming_uses_paging(self) -> None:
         join_rows = [
             {"id": 1, "name": "A"},
