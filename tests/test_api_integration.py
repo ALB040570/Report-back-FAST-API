@@ -251,6 +251,29 @@ class ApiIntegrationTests(unittest.TestCase):
         finally:
             router.__exit__(None, None, None)
 
+    def test_report_filters_computed_warnings(self) -> None:
+        router = self._mock_upstream()
+        try:
+            payload = self._base_payload()
+            payload["remoteSource"] = dict(payload["remoteSource"])
+            payload["remoteSource"]["computedFields"] = [
+                {
+                    "id": "bad",
+                    "fieldKey": "bad_field",
+                    "expression": "{{value}} +",
+                    "resultType": "number",
+                }
+            ]
+            response = asyncio.run(self._post("/api/report/filters", payload))
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertIn("computedWarnings", data)
+            self.assertIsInstance(data["computedWarnings"], list)
+            self.assertTrue(data["computedWarnings"])
+            self.assertEqual(data["computedWarnings"][0].get("fieldKey"), "bad_field")
+        finally:
+            router.__exit__(None, None, None)
+
     def test_report_details_paging(self) -> None:
         router = self._mock_upstream()
         try:
@@ -272,6 +295,34 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertIsInstance(data["entries"], list)
             self.assertIsInstance(data["total"], int)
             self.assertEqual(len(data["entries"]), 1)
+        finally:
+            router.__exit__(None, None, None)
+
+    def test_report_details_computed_warnings(self) -> None:
+        router = self._mock_upstream()
+        try:
+            payload = self._base_payload()
+            payload["remoteSource"] = dict(payload["remoteSource"])
+            payload["remoteSource"]["computedFields"] = [
+                {
+                    "id": "bad",
+                    "fieldKey": "bad_field",
+                    "expression": "{{value}} +",
+                    "resultType": "number",
+                }
+            ]
+            payload.update(
+                {
+                    "detailFields": ["cls", "year", "value"],
+                }
+            )
+            response = asyncio.run(self._post("/api/report/details", payload))
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertIn("computedWarnings", data)
+            self.assertIsInstance(data["computedWarnings"], list)
+            self.assertTrue(data["computedWarnings"])
+            self.assertEqual(data["computedWarnings"][0].get("fieldKey"), "bad_field")
         finally:
             router.__exit__(None, None, None)
 

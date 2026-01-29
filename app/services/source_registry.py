@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from app.services.upstream_client import build_full_url, request_json
 
-SERVICE360_BASE_URL = os.getenv("SERVICE360_BASE_URL", "http://45.8.116.32")
+SERVICE360_BASE_URL = os.getenv("SERVICE360_BASE_URL", "http://77.245.107.213")
 _SOURCE_CACHE_TTL = 300.0
 _SOURCE_CACHE: Dict[str, Any] = {"loaded_at": 0.0, "records": []}
 

@@ -21,7 +21,7 @@ from app.services.upstream_client import UpstreamHTTPError, async_request_json, 
 from app.models.filters import Filters
 from app.models.remote_source import RemoteSource
 
-SERVICE360_BASE_URL = os.getenv("SERVICE360_BASE_URL", "http://45.8.116.32")
+SERVICE360_BASE_URL = os.getenv("SERVICE360_BASE_URL", "http://77.245.107.213")
 logger = logging.getLogger(__name__)
 _RESULTS_DIR = os.path.join(os.getcwd(), "batch_results")
 

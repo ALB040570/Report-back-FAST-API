@@ -28,7 +28,7 @@ async def create_batch(payload: BatchRequest) -> BatchResponse:
         if not settings.upstream_base_url:
             raise HTTPException(
                 status_code=400,
-                detail="UPSTREAM_BASE_URL is required for relative endpoint (e.g. http://45.8.116.32)",
+                detail="UPSTREAM_BASE_URL is required for relative endpoint (e.g. http://77.245.107.213)",
             )
     if not payload.params:
         raise HTTPException(status_code=400, detail="params must be non-empty")

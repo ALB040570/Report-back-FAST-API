@@ -222,6 +222,8 @@ async def build_report_filters(payload: ViewRequest, request: Request, limit: in
                 await set_cached_records(cache_key, joined_records)
         else:
             _enforce_records_limit(len(joined_records), max_records, "cache_records")
+            if computed_engine:
+                computed_engine.apply(joined_records)
     except HTTPException:
         raise
     except ValueError as exc:
@@ -266,6 +268,8 @@ async def build_report_filters(payload: ViewRequest, request: Request, limit: in
     }
     if selected_pruned:
         response["selectedPruned"] = selected_pruned
+    if computed_engine and computed_engine.warnings:
+        response["computedWarnings"] = computed_engine.warnings
     if os.getenv("REPORT_DEBUG_FILTERS"):
         filtered_records, _ = apply_filters(
             joined_records,
@@ -360,6 +364,8 @@ async def build_report_details(payload: Dict[str, Any], request: Request) -> Dic
                 await set_cached_records(cache_key, joined_records)
         else:
             _enforce_records_limit(len(joined_records), max_records, "cache_records")
+            if computed_engine:
+                computed_engine.apply(joined_records)
 
         details_started = time.monotonic()
         response, debug_payload = build_details(
@@ -398,6 +404,8 @@ async def build_report_details(payload: Dict[str, Any], request: Request) -> Dic
         if join_debug:
             debug_payload["joins"] = join_debug
         response["debug"] = debug_payload
+    if computed_engine and computed_engine.warnings:
+        response["computedWarnings"] = computed_engine.warnings
 
     return response
 
