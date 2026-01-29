@@ -2,13 +2,14 @@ import asyncio
 import logging
 import os
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from app.observability.metrics import record_report_view_metrics
 from app.observability.otel import get_tracer
 from app.config import get_settings
 from app.models.view import ChartConfig, ViewResponse
 from app.models.view_request import ViewRequest
+from app.services.computed_fields import build_computed_fields_engine
 from app.services.data_source_client import async_iter_records, async_load_records, get_records_limit
 from app.services.filter_service import apply_filters
 from app.services.join_service import (
@@ -36,8 +37,9 @@ async def build_report_view_response(
 ) -> ViewResponse:
     settings = get_settings()
     tracer = get_tracer()
+    computed_engine = build_computed_fields_engine(payload.remoteSource)
     if settings.report_streaming:
-        return await _build_report_view_streaming(payload, request_id)
+        return await _build_report_view_streaming(payload, request_id, computed_engine)
 
     max_records = get_records_limit()
 
@@ -76,6 +78,8 @@ async def build_report_view_response(
         span.set_attribute("streaming_enabled", False)
         span.set_attribute("records_count", len(joined_records))
     _enforce_records_limit(len(joined_records), max_records, "apply_joins")
+    if computed_engine:
+        computed_engine.apply(joined_records)
     logger.info(
         "report.view.apply_joins",
         extra={
@@ -111,6 +115,8 @@ async def build_report_view_response(
     with tracer.start_as_current_span("build_pivot") as span:
         pivot_view = await asyncio.to_thread(build_view, filtered_records, payload.snapshot)
         span.set_attribute("streaming_enabled", False)
+    if computed_engine and computed_engine.warnings:
+        pivot_view.setdefault("meta", {})["computedWarnings"] = computed_engine.warnings
     logger.info(
         "report.view.build_pivot",
         extra={
@@ -221,6 +227,7 @@ def _merge_filter_debug(target: dict | None, source: dict) -> dict:
 async def _build_report_view_streaming(
     payload: ViewRequest,
     request_id: str | None = None,
+    computed_engine: Any | None = None,
 ) -> ViewResponse:
     settings = get_settings()
     tracer = get_tracer()
@@ -290,6 +297,8 @@ async def _build_report_view_streaming(
 
             total_joined += len(joined_chunk)
             _enforce_records_limit(total_joined, max_records, "apply_joins")
+            if computed_engine:
+                computed_engine.apply(joined_chunk)
 
             filters_started = time.monotonic()
             with tracer.start_as_current_span("apply_filters") as span:
@@ -366,6 +375,8 @@ async def _build_report_view_streaming(
     with tracer.start_as_current_span("build_pivot") as span:
         pivot_view = await asyncio.to_thread(aggregator.finalize)
         span.set_attribute("streaming_enabled", True)
+    if computed_engine and computed_engine.warnings:
+        pivot_view.setdefault("meta", {})["computedWarnings"] = computed_engine.warnings
     logger.info(
         "report.view.build_pivot",
         extra={

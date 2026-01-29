@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
+from app.models.computed_field import ComputedField
 
 class RemoteSource(BaseModel):
     """
@@ -20,5 +21,6 @@ class RemoteSource(BaseModel):
     pushdown: Optional[Dict[str, Any]] = None
 
     joins: Optional[List[Dict[str, Any]]] = None
+    computedFields: Optional[List[ComputedField]] = None
     rawBody: Optional[str] = None
     remoteMeta: Optional[Dict[str, Any]] = None

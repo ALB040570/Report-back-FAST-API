@@ -36,6 +36,9 @@ class PivotView(BaseModel):
     rows: List[ViewRow]
     totals: Optional[Dict[str, Any]] = None
 
+    class Config:
+        extra = "allow"
+
 
 class ChartConfig(BaseModel):
     type: Optional[str] = None

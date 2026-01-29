@@ -194,6 +194,30 @@ Upstream pushdown (Stage 3B)
   ]
 }
 
+Вычисляемые поля (computedFields)
+
+В payload /api/report/view, /api/report/filters, /api/report/details можно передать
+remoteSource.computedFields. Поля вычисляются после загрузки/joins и до фильтров/пивота,
+поэтому могут использоваться в filters/rows/columns/metrics.
+
+Формат:
+
+{
+  "remoteSource": {
+    "computedFields": [
+      {
+        "id": "uuid",
+        "fieldKey": "is_equal",
+        "expression": "(date({{FactDateEnd}}) == date({{UpdatedAt}})) ? 1 : 0",
+        "resultType": "number"
+      }
+    ]
+  }
+}
+
+Если формула содержит ошибки, значение вычисляемого поля = null,
+а предупреждения возвращаются в view.meta.computedWarnings.
+
 4. Проверка работы сервиса
    docker ps
    docker logs --tail 100 report-back-fast-api

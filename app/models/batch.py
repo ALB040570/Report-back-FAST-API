@@ -37,5 +37,6 @@ class BatchStatusResponse(BaseModel):
     results: Optional[List[BatchItemResult]] = None
     resultsSummary: Optional[Dict[str, int]] = None
     resultsFileRef: Optional[str] = None
+    resultsAvailableVia: Optional[str] = None
     error: Optional[str] = None
     cancelRequested: Optional[bool] = None

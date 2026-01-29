@@ -7,6 +7,7 @@ from typing import Any, Dict, Tuple
 
 import redis.asyncio as redis
 
+from app.services.computed_fields import normalize_computed_fields
 from app.services.data_source_client import build_request_payloads, normalize_remote_body
 
 
@@ -120,6 +121,12 @@ def build_records_cache_key(
     url = getattr(remote_source, "url", None) if remote_source else None
     method = getattr(remote_source, "method", None) if remote_source else None
     remote_meta = getattr(remote_source, "remoteMeta", None) if remote_source else None
+    computed_fields = None
+    if remote_source is not None:
+        if isinstance(remote_source, dict):
+            computed_fields = normalize_computed_fields(remote_source.get("computedFields") or [])
+        else:
+            computed_fields = normalize_computed_fields(getattr(remote_source, "computedFields", None) or [])
     remote_meta_key = None
     if isinstance(remote_meta, dict):
         keys = ("jobId", "batchJobId", "batchId", "resultsFileRef", "results_file_ref")
@@ -138,6 +145,7 @@ def build_records_cache_key(
         "body": _safe_json_payload(body),
         "requestParams": _safe_json_payload(request_params),
         "joins": _safe_json_payload(joins),
+        "computedFields": _safe_json_payload(computed_fields),
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

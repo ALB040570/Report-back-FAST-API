@@ -9,6 +9,7 @@ import respx
 
 from app.main import app
 from app.services import record_cache
+from app.storage.job_store import get_job_store
 
 
 class ApiIntegrationTests(unittest.TestCase):
@@ -293,6 +294,87 @@ class ApiIntegrationTests(unittest.TestCase):
         status_payload = status.json()
         self.assertIn("status", status_payload)
         self.assertIn("progress", status_payload)
+
+    def test_batch_results_paged_inline(self) -> None:
+        store = get_job_store()
+        job_id = "job-inline"
+        job = {
+            "job_id": job_id,
+            "status": "done",
+            "total": 3,
+            "done": 3,
+            "results": [
+                {"ok": True, "data": {"id": 1}},
+                {"ok": True, "data": {"id": 2}},
+                {"ok": True, "data": {"id": 3}},
+            ],
+            "resultsSummary": {"ok": 3, "failed": 0, "total": 3},
+            "resultsFileRef": None,
+        }
+        asyncio.run(store.set_job(job_id, job))
+        response = asyncio.run(self._get(f"/batch/{job_id}/results?offset=1&limit=1"))
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 3)
+        self.assertEqual(payload["offset"], 1)
+        self.assertEqual(payload["limit"], 1)
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(payload["results"][0]["data"]["id"], 2)
+
+    def test_batch_results_paged_file(self) -> None:
+        store = get_job_store()
+        job_id = "job-file"
+        results_dir = os.path.join(os.getcwd(), "batch_results")
+        os.makedirs(results_dir, exist_ok=True)
+        results_path = os.path.join(results_dir, f"{job_id}.json")
+        results_payload = [
+            {"ok": True, "data": {"id": 1}},
+            {"ok": True, "data": {"id": 2}},
+            {"ok": True, "data": {"id": 3}},
+        ]
+        with open(results_path, "w", encoding="utf-8") as handle:
+            json.dump(results_payload, handle)
+        try:
+            job = {
+                "job_id": job_id,
+                "status": "done",
+                "total": 3,
+                "done": 3,
+                "results": None,
+                "resultsSummary": {"ok": 3, "failed": 0, "total": 3},
+                "resultsFileRef": results_path,
+            }
+            asyncio.run(store.set_job(job_id, job))
+            response = asyncio.run(self._get(f"/batch/{job_id}/results?offset=1&limit=2"))
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["total"], 3)
+            self.assertEqual(len(payload["results"]), 2)
+            self.assertEqual(payload["results"][0]["data"]["id"], 2)
+        finally:
+            try:
+                os.remove(results_path)
+            except OSError:
+                pass
+
+    def test_batch_results_available_via(self) -> None:
+        store = get_job_store()
+        job_id = "job-paged"
+        job = {
+            "job_id": job_id,
+            "status": "done",
+            "createdAt": "2025-01-01T00:00:00Z",
+            "total": 1,
+            "done": 1,
+            "results": [{"ok": True, "params": {}}],
+            "resultsSummary": {"ok": 1, "failed": 0, "total": 1},
+            "resultsFileRef": None,
+        }
+        asyncio.run(store.set_job(job_id, job))
+        response = asyncio.run(self._get(f"/batch/{job_id}"))
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload.get("resultsAvailableVia"), "paged")
 
 
 if __name__ == "__main__":

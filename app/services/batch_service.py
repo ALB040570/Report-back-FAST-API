@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _RESULTS_INLINE_LIMIT_BYTES = 2 * 1024 * 1024
 _RESULTS_DIR = os.path.join(os.getcwd(), "batch_results")
+_RESULTS_FILE_CHUNK_SIZE = 64 * 1024
 
 
 def _now_iso() -> str:
@@ -344,6 +345,119 @@ def _cleanup_results_dir(ttl_seconds: int) -> None:
     if removed:
         logger.info("Batch results cleanup", extra={"removed": removed, "ttl_seconds": ttl_seconds})
 
+
+def _resolve_results_path(path_value: str) -> str:
+    if not path_value:
+        raise ValueError("resultsFileRef is missing")
+    path = path_value
+    if not os.path.isabs(path):
+        path = os.path.join(os.getcwd(), path)
+    base_dir = os.path.abspath(_RESULTS_DIR)
+    target = os.path.abspath(path)
+    if target != base_dir and not target.startswith(base_dir + os.sep):
+        raise ValueError("resultsFileRef points outside batch_results")
+    return target
+
+
+def _iter_results_file(path_value: str):
+    target = _resolve_results_path(path_value)
+    decoder = json.JSONDecoder()
+    buffer = ""
+    index = 0
+    started = False
+
+    with open(target, "r", encoding="utf-8") as handle:
+        while True:
+            if not started:
+                if index >= len(buffer):
+                    chunk = handle.read(_RESULTS_FILE_CHUNK_SIZE)
+                    if not chunk:
+                        raise ValueError("results file is empty")
+                    buffer += chunk
+                while index < len(buffer) and buffer[index].isspace():
+                    index += 1
+                if index >= len(buffer):
+                    continue
+                if buffer[index] != "[":
+                    raise ValueError("results file is not a JSON array")
+                index += 1
+                started = True
+                continue
+
+            while True:
+                if index >= len(buffer):
+                    chunk = handle.read(_RESULTS_FILE_CHUNK_SIZE)
+                    if not chunk:
+                        return
+                    buffer += chunk
+                while index < len(buffer) and buffer[index].isspace():
+                    index += 1
+                if index < len(buffer) and buffer[index] == ",":
+                    index += 1
+                    continue
+                break
+
+            if index >= len(buffer):
+                continue
+            if buffer[index] == "]":
+                return
+
+            while True:
+                try:
+                    item, end = decoder.raw_decode(buffer, index)
+                except json.JSONDecodeError:
+                    chunk = handle.read(_RESULTS_FILE_CHUNK_SIZE)
+                    if not chunk:
+                        raise
+                    buffer += chunk
+                    continue
+                index = end
+                yield item
+                break
+
+            if index > _RESULTS_FILE_CHUNK_SIZE * 4:
+                buffer = buffer[index:]
+                index = 0
+
+
+def _read_results_page_from_file(
+    path_value: str,
+    offset: int,
+    limit: int,
+    total_hint: Optional[int],
+) -> tuple[List[Dict[str, Any]], int]:
+    page: List[Dict[str, Any]] = []
+
+    if total_hint is not None:
+        for idx, item in enumerate(_iter_results_file(path_value)):
+            if idx < offset:
+                continue
+            page.append(item)
+            if len(page) >= limit:
+                break
+        return page, total_hint
+
+    total = 0
+    for item in _iter_results_file(path_value):
+        if total >= offset and len(page) < limit:
+            page.append(item)
+        total += 1
+    return page, total
+
+
+def get_job_results_page(job: Dict[str, Any], offset: int, limit: int) -> tuple[List[Dict[str, Any]], int]:
+    results = job.get("results")
+    if isinstance(results, list):
+        total = len(results)
+        return results[offset : offset + limit], total
+
+    results_file_ref = job.get("resultsFileRef")
+    if isinstance(results_file_ref, str):
+        summary = job.get("resultsSummary") if isinstance(job.get("resultsSummary"), dict) else {}
+        total_hint = summary.get("total") if isinstance(summary.get("total"), int) else None
+        return _read_results_page_from_file(results_file_ref, offset, limit, total_hint)
+
+    raise ValueError("Results are not available")
 
 async def _finish_job(
     job_id: str,
