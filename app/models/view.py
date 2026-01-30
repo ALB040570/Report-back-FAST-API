@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 from app.models.snapshot import ConditionalFormattingRule
+from app.models.snapshot import Snapshot
 
 
 class ViewCell(BaseModel):
@@ -53,5 +54,6 @@ class ViewResponse(BaseModel):
     - chart для графика (если нужно)
     """
     view: PivotView
+    snapshot: Optional[Snapshot] = None
     chart: Optional[ChartConfig] = None
     debug: Optional[Dict[str, Any]] = None

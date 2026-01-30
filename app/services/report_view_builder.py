@@ -155,6 +155,7 @@ async def build_report_view_response(
 
     return ViewResponse(
         view=pivot_view,
+        snapshot=payload.snapshot,
         chart=chart_config,
         debug=debug_payload,
     )
@@ -426,6 +427,7 @@ async def _build_report_view_streaming(
 
     return ViewResponse(
         view=pivot_view,
+        snapshot=payload.snapshot,
         chart=chart_config,
         debug=debug_payload,
     )
