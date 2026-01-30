@@ -298,6 +298,25 @@ class ApiIntegrationTests(unittest.TestCase):
         finally:
             router.__exit__(None, None, None)
 
+    def test_report_details_metric_filter(self) -> None:
+        router = self._mock_upstream()
+        try:
+            payload = self._base_payload()
+            payload.update(
+                {
+                    "detailFields": ["cls", "year", "value"],
+                    "detailMetricFilter": {"fieldKey": "value", "op": "lte", "value": "10"},
+                }
+            )
+            response = asyncio.run(self._post("/api/report/details", payload))
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["total"], 1)
+            self.assertEqual(len(data["entries"]), 1)
+            self.assertEqual(data["entries"][0]["value"], 10)
+        finally:
+            router.__exit__(None, None, None)
+
     def test_report_details_computed_warnings(self) -> None:
         router = self._mock_upstream()
         try:
