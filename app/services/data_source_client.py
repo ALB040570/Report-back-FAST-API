@@ -21,7 +21,6 @@ from app.services.upstream_client import UpstreamHTTPError, async_request_json, 
 from app.models.filters import Filters
 from app.models.remote_source import RemoteSource
 
-SERVICE360_BASE_URL = os.getenv("SERVICE360_BASE_URL", "http://77.245.107.213")
 logger = logging.getLogger(__name__)
 _RESULTS_DIR = os.path.join(os.getcwd(), "batch_results")
 
@@ -170,6 +169,10 @@ def _to_camel_case(value: str) -> str:
 
 def _get_remote_allowlist() -> str | None:
     return os.getenv("REPORT_REMOTE_ALLOWLIST") or os.getenv("UPSTREAM_ALLOWLIST")
+
+
+def _get_upstream_base_url() -> str:
+    return (os.getenv("UPSTREAM_BASE_URL") or "").strip()
 
 
 def _get_paging_allowlist() -> str | None:
@@ -630,6 +633,8 @@ def _resolve_full_url(url: str, base_url: str) -> str:
                 raise ValueError("remoteSource.url points to a private host; allowlist is required")
             raise ValueError("remoteSource.url is not allowed")
         return url
+    if not base_url:
+        raise ValueError("UPSTREAM_BASE_URL is required for relative remoteSource.url")
     return build_full_url(base_url, url)
 
 
@@ -674,7 +679,7 @@ def load_records(remote_source: RemoteSource) -> List[Dict[str, Any]]:
     # 1. Базовые поля источника
     method = (remote_source.method or "POST").upper()
     url = (remote_source.url or "").strip()
-    base_url = SERVICE360_BASE_URL.rstrip("/")
+    base_url = _get_upstream_base_url().rstrip("/")
 
     if not url:
         return []
@@ -741,7 +746,7 @@ async def _async_load_records_with_client(
 
     method = (remote_source.method or "POST").upper()
     url = (remote_source.url or "").strip()
-    base_url = SERVICE360_BASE_URL.rstrip("/")
+    base_url = _get_upstream_base_url().rstrip("/")
 
     if not url:
         return []
@@ -860,7 +865,7 @@ async def _async_iter_records_with_client(
 
     method = (remote_source.method or "POST").upper()
     url = (remote_source.url or "").strip()
-    base_url = SERVICE360_BASE_URL.rstrip("/")
+    base_url = _get_upstream_base_url().rstrip("/")
 
     if not url:
         return

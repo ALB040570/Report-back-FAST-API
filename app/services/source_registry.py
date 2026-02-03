@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from app.services.upstream_client import build_full_url, request_json
-
-SERVICE360_BASE_URL = os.getenv("SERVICE360_BASE_URL", "http://77.245.107.213")
 _SOURCE_CACHE_TTL = 300.0
 _SOURCE_CACHE: Dict[str, Any] = {"loaded_at": 0.0, "records": []}
 
@@ -19,6 +17,10 @@ class SourceConfig:
     body: Any
     raw_body: Optional[str]
     headers: Dict[str, Any]
+
+
+def _get_upstream_base_url() -> str:
+    return (os.getenv("UPSTREAM_BASE_URL") or "").strip()
 
 
 def _parse_method_body(raw_body: Any) -> tuple[Any, Optional[str]]:
@@ -42,7 +44,10 @@ def _parse_method_body(raw_body: Any) -> tuple[Any, Optional[str]]:
 
 
 def _fetch_source_records() -> List[Dict[str, Any]]:
-    url = build_full_url(SERVICE360_BASE_URL, "/dtj/api/report")
+    base_url = _get_upstream_base_url()
+    if not base_url:
+        raise ValueError("UPSTREAM_BASE_URL is required to load report sources")
+    url = build_full_url(base_url, "/dtj/api/report")
     payload = {"method": "report/loadReportSource", "params": [0]}
     data = request_json("POST", url, json_body=payload, timeout=30.0)
     if isinstance(data, dict):

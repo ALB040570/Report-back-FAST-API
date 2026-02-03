@@ -50,8 +50,6 @@ docker images | grep report-back-fast-api
 cp .env.example .env
 
 Пример .env:
-
-SERVICE360_BASE_URL=http://77.245.107.213
 REPORT_FILTERS_MAX_VALUES=200
 REPORT_FILTERS_CACHE_TTL=30
 REPORT_FILTERS_CACHE_MAX=20
