@@ -7,6 +7,7 @@ from typing import Any, Dict, Tuple
 
 import redis.asyncio as redis
 
+from app.models.filters import Filters
 from app.services.computed_fields import normalize_computed_fields
 from app.services.data_source_client import build_request_payloads, normalize_remote_body
 
@@ -106,10 +107,55 @@ def _safe_json_payload(value: Any) -> Any:
     return str(value)
 
 
+def _strip_empty(value: Any) -> Any | None:
+    if isinstance(value, dict):
+        cleaned: Dict[str, Any] = {}
+        for key, item in value.items():
+            cleaned_item = _strip_empty(item)
+            if cleaned_item in (None, {}, []):
+                continue
+            cleaned[key] = cleaned_item
+        return cleaned or None
+    if isinstance(value, list):
+        if not value:
+            return None
+        cleaned_list = []
+        for item in value:
+            cleaned_item = _strip_empty(item) if isinstance(item, (dict, list)) else item
+            if cleaned_item in (None, {}, []):
+                continue
+            cleaned_list.append(cleaned_item)
+        return cleaned_list or None
+    return value
+
+
+def _normalize_filters(filters: Filters | Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not filters:
+        return None
+    try:
+        if isinstance(filters, Filters):
+            model = filters
+        else:
+            try:
+                model = Filters.parse_obj(filters)
+            except AttributeError:
+                model = Filters.model_validate(filters)
+    except Exception:
+        return None
+
+    if hasattr(model, "model_dump"):
+        payload = model.model_dump(exclude_none=True)
+    else:
+        payload = model.dict(exclude_none=True)
+    cleaned = _strip_empty(payload)
+    return cleaned or None
+
+
 def build_records_cache_key(
     template_id: str,
     remote_source: Any,
     joins: Any,
+    filters: Filters | Dict[str, Any] | None = None,
 ) -> str:
     cache_template_id = (
         template_id
@@ -147,5 +193,8 @@ def build_records_cache_key(
         "joins": _safe_json_payload(joins),
         "computedFields": _safe_json_payload(computed_fields),
     }
+    filters_payload = _normalize_filters(filters)
+    if filters_payload is not None:
+        payload["filters"] = _safe_json_payload(filters_payload)
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

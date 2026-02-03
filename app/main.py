@@ -328,7 +328,12 @@ async def build_report_details(payload: Dict[str, Any], request: Request) -> Dic
 
     try:
         joins = await resolve_joins(view_payload.remoteSource)
-        cache_key = build_records_cache_key(view_payload.templateId, view_payload.remoteSource, joins)
+        cache_key = build_records_cache_key(
+            view_payload.templateId,
+            view_payload.remoteSource,
+            joins,
+            view_payload.filters,
+        )
         joined_records = await get_cached_records(cache_key)
         join_debug: Dict[str, Any] = {}
         cache_hit = joined_records is not None
