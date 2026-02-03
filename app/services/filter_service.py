@@ -310,7 +310,7 @@ def _resolve_field_label(
     if isinstance(override, str) and override.strip():
         return override.strip()
 
-    meta = _parse_date_part_key(key)
+    meta = parse_date_part_key(key)
     base_key = meta["field_key"] if meta else key
 
     base_override = header_overrides.get(base_key)
