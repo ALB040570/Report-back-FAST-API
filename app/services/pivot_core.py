@@ -1,8 +1,9 @@
 import ast
 import functools
 import json
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
+
+from app.services.date_utils import parse_date_input, parse_date_part_key, resolve_date_part_value
 
 
 def _normalize_value_for_key(value: Any) -> str:
@@ -22,78 +23,6 @@ def _format_label_value(value: Any) -> str:
     return str(value)
 
 
-DATE_PART_MARKER = "__date_part__"
-MONTH_LABELS = [
-    "Январь",
-    "Февраль",
-    "Март",
-    "Апрель",
-    "Май",
-    "Июнь",
-    "Июль",
-    "Август",
-    "Сентябрь",
-    "Октябрь",
-    "Ноябрь",
-    "Декабрь",
-]
-
-
-def _parse_date_part_key(key: str | None) -> Dict[str, str] | None:
-    if not key or not isinstance(key, str):
-        return None
-    index = key.rfind(DATE_PART_MARKER)
-    if index == -1:
-        return None
-    field_key = key[:index]
-    part = key[index + len(DATE_PART_MARKER) :]
-    if not field_key or part not in {"year", "month", "day"}:
-        return None
-    return {"field_key": field_key, "part": part}
-
-
-def _parse_date_input(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.astimezone(timezone.utc)
-    if isinstance(value, (int, float)):
-        try:
-            return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-    text = str(value).strip()
-    if not text:
-        return None
-    if "." in text:
-        try:
-            day, month, year = text.split(".")
-            iso_string = f"{year}-{month}-{day}T00:00:00+00:00"
-            return datetime.fromisoformat(iso_string)
-        except ValueError:
-            pass
-    try:
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        return datetime.fromisoformat(text)
-    except ValueError:
-        return None
-
-
-def _resolve_date_part_value(value: Any, part: str) -> str | None:
-    parsed = _parse_date_input(value)
-    if not parsed:
-        return None
-    if part == "year":
-        return str(parsed.year)
-    if part == "month":
-        month_index = parsed.month - 1
-        numeric = f"{parsed.month:02d}"
-        label = MONTH_LABELS[month_index] if 0 <= month_index < len(MONTH_LABELS) else ""
-        return f"{numeric} — {label}" if label else numeric
-    if part == "day":
-        return f"{parsed.day:02d}"
-    return None
 
 
 def _resolve_record_value_base(record: Dict[str, Any], key: str | None) -> Any:
@@ -121,10 +50,10 @@ def _build_dimension_key(values: Tuple[Any, ...], field_keys: List[str]) -> str:
 def _resolve_record_value(record: Dict[str, Any], key: str | None) -> Any:
     if not record or not key:
         return None
-    meta = _parse_date_part_key(key)
+    meta = parse_date_part_key(key)
     if meta:
         base_value = _resolve_record_value_base(record, meta["field_key"])
-        return _resolve_date_part_value(base_value, meta["part"])
+        return resolve_date_part_value(base_value, meta["part"])
     return _resolve_record_value_base(record, key)
 
 

@@ -54,6 +54,21 @@ class FilterServiceTests(unittest.TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["createdAt"], 1_750_000_000_000)
 
+    def test_range_filter_dot_date(self) -> None:
+        records = [
+            {"createdAt": "09.12.2025"},
+            {"createdAt": "30.11.2025"},
+        ]
+        snapshot = {
+            "fieldMeta": {"createdAt": {"type": "date"}},
+            "filterRanges": {
+                "createdAt": {"start": "01.12.2025", "end": "31.12.2025"},
+            },
+        }
+        filtered, _ = apply_filters(records, snapshot, None)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["createdAt"], "09.12.2025")
+
     def test_values_filter_flat_key(self) -> None:
         records = [
             {"OBJ.nameSection": "A"},

@@ -1,25 +1,15 @@
 import json
-from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Tuple
 
 from app.models.filters import Filters, FilterValue
 from app.models.snapshot import Snapshot
+from app.services.date_utils import (
+    DATE_PART_MARKER,
+    parse_date_input,
+    parse_date_part_key,
+    resolve_date_part_value,
+)
 
-DATE_PART_MARKER = "__date_part__"
-MONTH_LABELS = [
-    "Январь",
-    "Февраль",
-    "Март",
-    "Апрель",
-    "Май",
-    "Июнь",
-    "Июль",
-    "Август",
-    "Сентябрь",
-    "Октябрь",
-    "Ноябрь",
-    "Декабрь",
-]
 DATE_PART_LABELS = {
     "year": "Год",
     "month": "Месяц",
@@ -201,70 +191,15 @@ def _normalize_filter_value(value: Any) -> str:
     return str(value)
 
 
-def _parse_date_part_key(key: str | None) -> Dict[str, str] | None:
-    if not key or not isinstance(key, str):
-        return None
-    index = key.rfind(DATE_PART_MARKER)
-    if index == -1:
-        return None
-    field_key = key[:index]
-    part = key[index + len(DATE_PART_MARKER) :]
-    if not field_key or part not in {"year", "month", "day"}:
-        return None
-    return {"field_key": field_key, "part": part}
-
-
-def _parse_date_input(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.astimezone(timezone.utc)
-    if isinstance(value, (int, float)):
-        try:
-            return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-    text = str(value).strip()
-    if not text:
-        return None
-    if len(text) == 10 and text[4] == "-" and text[7] == "-":
-        try:
-            return datetime.fromisoformat(f"{text}T00:00:00+00:00")
-        except ValueError:
-            return None
-    try:
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        return datetime.fromisoformat(text)
-    except ValueError:
-        return None
-
-
-def _resolve_date_part_value(value: Any, part: str) -> str | None:
-    parsed = _parse_date_input(value)
-    if not parsed:
-        return None
-    if part == "year":
-        return str(parsed.year)
-    if part == "month":
-        month_index = parsed.month - 1
-        numeric = f"{parsed.month:02d}"
-        label = MONTH_LABELS[month_index] if 0 <= month_index < len(MONTH_LABELS) else ""
-        return f"{numeric} — {label}" if label else numeric
-    if part == "day":
-        return f"{parsed.day:02d}"
-    return None
-
-
 def _resolve_record_value(record: Dict[str, Any], key: str | None) -> Any:
     if not record or not key:
         return None
     if key in record:
         return record.get(key)
-    meta = _parse_date_part_key(key)
+    meta = parse_date_part_key(key)
     if meta:
         base_value = record.get(meta["field_key"])
-        return _resolve_date_part_value(base_value, meta["part"])
+        return resolve_date_part_value(base_value, meta["part"])
     if "." in key:
         current: Any = record
         for part in key.split("."):
@@ -313,7 +248,7 @@ def _infer_field_type(values: List[Any]) -> str:
 
     for value in cleaned:
         if isinstance(value, str):
-            if _parse_date_input(value) is None:
+            if parse_date_input(value) is None:
                 all_dates = False
             if _to_number(value) is None:
                 all_numeric = False
@@ -656,7 +591,7 @@ def _to_ms(value: Any) -> int | None:
         if abs(num) < 10_000_000_000:
             return num * 1000
         return num
-    parsed = _parse_date_input(value)
+    parsed = parse_date_input(value)
     if not parsed:
         return None
     return int(parsed.timestamp() * 1000)
@@ -697,7 +632,7 @@ def _passes_range_filter(
 
     is_date = _is_date_type(field_meta, key)
     if not is_date and isinstance(value, str):
-        is_date = _parse_date_input(value) is not None
+        is_date = parse_date_input(value) is not None
 
     if is_date:
         val_ms = _to_ms(value)
