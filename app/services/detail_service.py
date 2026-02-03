@@ -2,11 +2,11 @@ from typing import Any, Dict, List, Tuple
 
 from app.models.filters import Filters
 from app.models.snapshot import Snapshot
+from app.services.date_utils import parse_date_input
 from app.services.filter_service import (
     apply_filters,
     _is_date_type,
     _normalize_filter_value,
-    _parse_date_input,
     _resolve_field_label,
     _resolve_meta_type,
     _resolve_record_value,
@@ -139,7 +139,7 @@ def _normalize_detail_metric_op(op: Any) -> str | None:
 
 
 def _is_date_like(value: Any) -> bool:
-    return isinstance(value, str) and _parse_date_input(value) is not None
+    return isinstance(value, str) and parse_date_input(value) is not None
 
 
 def _values_equal(
