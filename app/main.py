@@ -43,6 +43,19 @@ logger = logging.getLogger(__name__)
 configure_otel(app)
 
 
+def _get_cors_allow_origins() -> list[str]:
+    value = os.getenv("CORS_ALLOW_ORIGINS")
+    if value is None or not value.strip():
+        return [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://192.168.1.81:5173",
+        ]
+    if value.strip() == "*":
+        return ["*"]
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def _enforce_records_limit(count: int, limit: int | None, stage: str) -> None:
     if limit is None:
         return
@@ -101,11 +114,7 @@ async def request_context_middleware(request: Request, call_next):  # type: igno
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://192.168.1.81:5173",
-    ],
+    allow_origins=_get_cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
