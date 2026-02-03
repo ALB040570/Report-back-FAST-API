@@ -18,13 +18,17 @@ class Settings:
     report_job_queue_max_size: int
     report_job_poll_interval_ms: int
     report_streaming: bool
+    report_streaming_on_limit: bool
     report_chunk_size: int
     report_streaming_max_groups: int
     report_streaming_max_unique_values_per_dim: int
+    report_streaming_max_records: int
     report_paging_allowlist: Optional[str]
     report_paging_max_pages: int
     report_upstream_paging: bool
     report_join_lookup_max_keys: int
+    report_join_max_records: int
+    report_join_source_max_records: int
     report_upstream_pushdown: bool
     report_pushdown_allowlist: Optional[str]
     report_pushdown_max_filters: int
@@ -99,15 +103,19 @@ def get_settings() -> Settings:
         report_job_queue_max_size=_get_int("REPORT_JOB_QUEUE_MAX_SIZE", 100),
         report_job_poll_interval_ms=_get_int("REPORT_JOB_POLL_INTERVAL_MS", 200),
         report_streaming=_get_bool("REPORT_STREAMING", False),
+        report_streaming_on_limit=_get_bool("REPORT_STREAMING_ON_LIMIT", True),
         report_chunk_size=_get_int("REPORT_CHUNK_SIZE", 1000),
         report_streaming_max_groups=_get_int_allow_zero("REPORT_STREAMING_MAX_GROUPS", 200000),
         report_streaming_max_unique_values_per_dim=_get_int_allow_zero(
             "REPORT_STREAMING_MAX_UNIQUE_VALUES_PER_DIM", 0
         ),
+        report_streaming_max_records=_get_int_allow_zero("REPORT_STREAMING_MAX_RECORDS", 0),
         report_paging_allowlist=os.getenv("REPORT_PAGING_ALLOWLIST"),
         report_paging_max_pages=_get_int("REPORT_PAGING_MAX_PAGES", 2000),
         report_upstream_paging=_get_bool("REPORT_UPSTREAM_PAGING", False),
         report_join_lookup_max_keys=_get_int("REPORT_JOIN_LOOKUP_MAX_KEYS", 2_000_000),
+        report_join_max_records=_get_int_allow_zero("REPORT_JOIN_MAX_RECORDS", 0),
+        report_join_source_max_records=_get_int_allow_zero("REPORT_JOIN_SOURCE_MAX_RECORDS", 0),
         report_upstream_pushdown=_get_bool("REPORT_UPSTREAM_PUSHDOWN", False),
         report_pushdown_allowlist=os.getenv("REPORT_PUSHDOWN_ALLOWLIST"),
         report_pushdown_max_filters=_get_int("REPORT_PUSHDOWN_MAX_FILTERS", 50),

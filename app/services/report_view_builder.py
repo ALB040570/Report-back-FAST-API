@@ -24,11 +24,24 @@ from app.services.view_service import build_view
 logger = logging.getLogger(__name__)
 
 
+class RecordsLimitExceeded(ValueError):
+    def __init__(self, count: int, limit: int | None, stage: str) -> None:
+        super().__init__(f"Records limit exceeded after {stage}: {count} > {limit}")
+        self.count = count
+        self.limit = limit
+        self.stage = stage
+
+
 def _enforce_records_limit(count: int, limit: Optional[int], stage: str) -> None:
     if limit is None:
         return
     if count > limit:
-        raise ValueError(f"Records limit exceeded after {stage}: {count} > {limit}")
+        raise RecordsLimitExceeded(count, limit, stage)
+
+
+def _get_streaming_records_limit(settings: Any) -> Optional[int]:
+    limit = getattr(settings, "report_streaming_max_records", 0) or 0
+    return None if limit <= 0 else limit
 
 
 async def build_report_view_response(
@@ -43,90 +56,105 @@ async def build_report_view_response(
 
     max_records = get_records_limit()
 
-    load_started = time.monotonic()
-    stats: dict = {}
-    with tracer.start_as_current_span("load_records") as span:
-        records = await async_load_records(
-            payload.remoteSource,
-            payload_filters=payload.filters,
-            stats=stats,
+    try:
+        load_started = time.monotonic()
+        stats: dict = {}
+        with tracer.start_as_current_span("load_records") as span:
+            records = await async_load_records(
+                payload.remoteSource,
+                payload_filters=payload.filters,
+                stats=stats,
+            )
+            span.set_attribute("streaming_enabled", False)
+            span.set_attribute("records_count", len(records))
+            span.set_attribute("pages_count", 1 if records else 0)
+            span.set_attribute("pushdown_enabled", bool(stats.get("pushdown_enabled")))
+            span.set_attribute("pushdown_filters_applied", int(stats.get("pushdown_filters_applied") or 0))
+            span.set_attribute("pushdown_paging_applied", bool(stats.get("pushdown_paging_applied")))
+        _enforce_records_limit(len(records), max_records, "load_records")
+        logger.info(
+            "report.view.load_records",
+            extra={
+                "templateId": payload.templateId,
+                "requestId": request_id,
+                "records": len(records),
+                "duration_ms": int((time.monotonic() - load_started) * 1000),
+            },
         )
-        span.set_attribute("streaming_enabled", False)
-        span.set_attribute("records_count", len(records))
-        span.set_attribute("pages_count", 1 if records else 0)
-        span.set_attribute("pushdown_enabled", bool(stats.get("pushdown_enabled")))
-        span.set_attribute("pushdown_filters_applied", int(stats.get("pushdown_filters_applied") or 0))
-        span.set_attribute("pushdown_paging_applied", bool(stats.get("pushdown_paging_applied")))
-    _enforce_records_limit(len(records), max_records, "load_records")
-    logger.info(
-        "report.view.load_records",
-        extra={
-            "templateId": payload.templateId,
-            "requestId": request_id,
-            "records": len(records),
-            "duration_ms": int((time.monotonic() - load_started) * 1000),
-        },
-    )
 
-    joins_started = time.monotonic()
-    with tracer.start_as_current_span("apply_joins") as span:
-        joined_records, join_debug = await apply_joins(
-            records,
-            payload.remoteSource,
-            max_records=max_records,
+        joins_started = time.monotonic()
+        with tracer.start_as_current_span("apply_joins") as span:
+            joined_records, join_debug = await apply_joins(
+                records,
+                payload.remoteSource,
+                max_records=max_records,
+            )
+            span.set_attribute("streaming_enabled", False)
+            span.set_attribute("records_count", len(joined_records))
+        _enforce_records_limit(len(joined_records), max_records, "apply_joins")
+        if computed_engine:
+            computed_engine.apply(joined_records)
+        logger.info(
+            "report.view.apply_joins",
+            extra={
+                "templateId": payload.templateId,
+                "requestId": request_id,
+                "recordsBefore": len(records),
+                "recordsAfter": len(joined_records),
+                "duration_ms": int((time.monotonic() - joins_started) * 1000),
+            },
         )
-        span.set_attribute("streaming_enabled", False)
-        span.set_attribute("records_count", len(joined_records))
-    _enforce_records_limit(len(joined_records), max_records, "apply_joins")
-    if computed_engine:
-        computed_engine.apply(joined_records)
-    logger.info(
-        "report.view.apply_joins",
-        extra={
-            "templateId": payload.templateId,
-            "requestId": request_id,
-            "recordsBefore": len(records),
-            "recordsAfter": len(joined_records),
-            "duration_ms": int((time.monotonic() - joins_started) * 1000),
-        },
-    )
 
-    filters_started = time.monotonic()
-    with tracer.start_as_current_span("apply_filters") as span:
-        filtered_records, filter_debug = apply_filters(
-            joined_records,
-            payload.snapshot,
-            payload.filters,
+        filters_started = time.monotonic()
+        with tracer.start_as_current_span("apply_filters") as span:
+            filtered_records, filter_debug = apply_filters(
+                joined_records,
+                payload.snapshot,
+                payload.filters,
+            )
+            span.set_attribute("streaming_enabled", False)
+            span.set_attribute("records_count", len(filtered_records))
+        logger.info(
+            "report.view.apply_filters",
+            extra={
+                "templateId": payload.templateId,
+                "requestId": request_id,
+                "recordsBefore": len(joined_records),
+                "recordsAfter": len(filtered_records),
+                "duration_ms": int((time.monotonic() - filters_started) * 1000),
+            },
         )
-        span.set_attribute("streaming_enabled", False)
-        span.set_attribute("records_count", len(filtered_records))
-    logger.info(
-        "report.view.apply_filters",
-        extra={
-            "templateId": payload.templateId,
-            "requestId": request_id,
-            "recordsBefore": len(joined_records),
-            "recordsAfter": len(filtered_records),
-            "duration_ms": int((time.monotonic() - filters_started) * 1000),
-        },
-    )
 
-    pivot_started = time.monotonic()
-    with tracer.start_as_current_span("build_pivot") as span:
-        pivot_view = await asyncio.to_thread(build_view, filtered_records, payload.snapshot)
-        span.set_attribute("streaming_enabled", False)
-    if computed_engine and computed_engine.warnings:
-        pivot_view.setdefault("meta", {})["computedWarnings"] = computed_engine.warnings
-    logger.info(
-        "report.view.build_pivot",
-        extra={
-            "templateId": payload.templateId,
-            "requestId": request_id,
-            "rows": len(pivot_view.get("rows", [])),
-            "columns": len(pivot_view.get("columns", [])),
-            "duration_ms": int((time.monotonic() - pivot_started) * 1000),
-        },
-    )
+        pivot_started = time.monotonic()
+        with tracer.start_as_current_span("build_pivot") as span:
+            pivot_view = await asyncio.to_thread(build_view, filtered_records, payload.snapshot)
+            span.set_attribute("streaming_enabled", False)
+        if computed_engine and computed_engine.warnings:
+            pivot_view.setdefault("meta", {})["computedWarnings"] = computed_engine.warnings
+        logger.info(
+            "report.view.build_pivot",
+            extra={
+                "templateId": payload.templateId,
+                "requestId": request_id,
+                "rows": len(pivot_view.get("rows", [])),
+                "columns": len(pivot_view.get("columns", [])),
+                "duration_ms": int((time.monotonic() - pivot_started) * 1000),
+            },
+        )
+    except RecordsLimitExceeded as exc:
+        if settings.report_streaming_on_limit:
+            logger.info(
+                "report.view.streaming_fallback",
+                extra={
+                    "templateId": payload.templateId,
+                    "requestId": request_id,
+                    "stage": exc.stage,
+                    "count": exc.count,
+                    "limit": exc.limit,
+                },
+            )
+            return await _build_report_view_streaming(payload, request_id, computed_engine)
+        raise
 
     chart_config = ChartConfig(
         type="table",
@@ -232,7 +260,8 @@ async def _build_report_view_streaming(
 ) -> ViewResponse:
     settings = get_settings()
     tracer = get_tracer()
-    max_records = get_records_limit()
+    max_records = _get_streaming_records_limit(settings)
+    join_max_records = settings.report_join_max_records or None
     chunk_size = settings.report_chunk_size
     prepared_joins = await prepare_joins_streaming(
         payload.remoteSource,
@@ -297,7 +326,7 @@ async def _build_report_view_streaming(
             join_duration_ms += int((time.monotonic() - joins_started) * 1000)
 
             total_joined += len(joined_chunk)
-            _enforce_records_limit(total_joined, max_records, "apply_joins")
+            _enforce_records_limit(total_joined, join_max_records, "apply_joins")
             if computed_engine:
                 computed_engine.apply(joined_chunk)
 

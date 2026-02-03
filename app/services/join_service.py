@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.config import get_settings
 from app.models.remote_source import RemoteSource
 from app.services.data_source_client import async_iter_records, async_load_records
 from app.services.source_registry import get_source_config
@@ -199,6 +200,9 @@ async def apply_joins(
     joins_override: Optional[List[Dict[str, Any]]] = None,
     max_records: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    settings = get_settings()
+    join_max_records = settings.report_join_max_records or None
+    join_source_max_records = settings.report_join_source_max_records or None
     joins = joins_override if joins_override is not None else await _resolve_joins(remote_source)
     debug: Dict[str, Any] = {
         "joinsApplied": [],
@@ -226,6 +230,10 @@ async def apply_joins(
                     rawBody=config.raw_body,
                 )
                 join_rows = await async_load_records(join_source)
+                if join_source_max_records and len(join_rows) > join_source_max_records:
+                    raise ValueError(
+                        f"Join source records limit exceeded: {len(join_rows)} > {join_source_max_records}"
+                    )
                 if max_records and len(join_rows) > max_records:
                     raise ValueError(f"Records limit exceeded: {len(join_rows)} > {max_records}")
 
@@ -233,6 +241,8 @@ async def apply_joins(
         rows, matched_rows = _apply_join(rows, join_rows, join)
         if max_records and len(rows) > max_records:
             raise ValueError(f"Records limit exceeded: {len(rows)} > {max_records}")
+        if join_max_records and len(rows) > join_max_records:
+            raise ValueError(f"Join records limit exceeded: {len(rows)} > {join_max_records}")
         debug["joinsApplied"].append(
             {
                 "joinId": join.get("id"),
@@ -252,6 +262,8 @@ async def prepare_joins(
     joins_override: Optional[List[Dict[str, Any]]] = None,
     max_records: Optional[int] = None,
 ) -> List[PreparedJoin]:
+    settings = get_settings()
+    join_source_max_records = settings.report_join_source_max_records or None
     joins = joins_override if joins_override is not None else await _resolve_joins(remote_source)
     prepared: List[PreparedJoin] = []
     for join in joins:
@@ -269,6 +281,10 @@ async def prepare_joins(
                     rawBody=config.raw_body,
                 )
                 join_rows = await async_load_records(join_source)
+                if join_source_max_records and len(join_rows) > join_source_max_records:
+                    raise ValueError(
+                        f"Join source records limit exceeded: {len(join_rows)} > {join_source_max_records}"
+                    )
                 if max_records and len(join_rows) > max_records:
                     raise ValueError(f"Records limit exceeded: {len(join_rows)} > {max_records}")
         prepared.append(
@@ -292,6 +308,8 @@ async def prepare_joins_streaming(
     paging_max_pages: Optional[int] = None,
     paging_force: bool = False,
 ) -> List[PreparedJoinLookup]:
+    settings = get_settings()
+    join_source_max_records = settings.report_join_source_max_records or None
     joins = joins_override if joins_override is not None else await _resolve_joins(remote_source)
     prepared: List[PreparedJoinLookup] = []
     for join in joins:
@@ -319,6 +337,10 @@ async def prepare_joins_streaming(
                     if not chunk:
                         continue
                     total_rows += len(chunk)
+                    if join_source_max_records and total_rows > join_source_max_records:
+                        raise ValueError(
+                            f"Join source records limit exceeded: {total_rows} > {join_source_max_records}"
+                        )
                     if max_records and total_rows > max_records:
                         raise ValueError(f"Records limit exceeded: {total_rows} > {max_records}")
                     _update_join_lookup(lookup, join, chunk, lookup_max_keys)
