@@ -14,6 +14,7 @@ from app.api.batch import router as batch_router
 from app.config import get_settings
 from app.models.view_request import ViewRequest
 from app.models.view import ViewResponse
+from app.models.report_job import ReportJobQueuedResponse
 from app.observability.metrics import record_http_request, set_report_jobs_queue_size
 from app.observability.otel import configure_otel
 from app.observability.request_context import set_request_id
@@ -140,7 +141,18 @@ async def metrics() -> Response:
     return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
 
 
-@app.post("/api/report/view", response_model=ViewResponse, tags=["report"])
+@app.post(
+    "/api/report/view",
+    response_model=ViewResponse,
+    tags=["report"],
+    responses={
+        202: {
+            "model": ReportJobQueuedResponse,
+            "description": "Async report queued",
+        },
+        429: {"description": "Report job queue is full"},
+    },
+)
 async def build_report_view(payload: ViewRequest, request: Request) -> ViewResponse:
     """
     Основной endpoint для конструктора дашбордов.
