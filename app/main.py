@@ -187,7 +187,11 @@ async def build_report_filters(payload: ViewRequest, request: Request, limit: in
         cache_hit = joined_records is not None
         if joined_records is None:
             load_started = time.monotonic()
-            records = await async_load_records(payload.remoteSource, payload_filters=payload.filters)
+            records = await async_load_records(
+                payload.remoteSource,
+                payload_filters=None,
+                pushdown_enabled=False,
+            )
             _enforce_records_limit(len(records), max_records, "load_records")
             logger.info(
                 "report.filters.load_records",
@@ -280,6 +284,7 @@ async def build_report_filters(payload: ViewRequest, request: Request, limit: in
         debug["recordsAfterFilter"] = len(filtered_records)
         debug["truncated"] = truncated
         debug["cacheHit"] = cache_hit
+        debug["pushdownDisabled"] = True
         if selected_pruned:
             debug["selectedPruned"] = selected_pruned
         if join_debug:

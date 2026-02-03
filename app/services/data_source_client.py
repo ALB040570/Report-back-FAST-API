@@ -731,6 +731,7 @@ async def _async_load_records_with_client(
     remote_source: RemoteSource,
     client: httpx.AsyncClient,
     payload_filters: Filters | Dict[str, Any] | None = None,
+    pushdown_enabled: bool | None = None,
     stats: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     local_found, local_records = _extract_local_records(remote_source)
@@ -762,10 +763,16 @@ async def _async_load_records_with_client(
     stats.setdefault("pushdown_filters_applied", 0)
     stats.setdefault("pushdown_paging_applied", False)
 
-    pushdown_cfg, pushdown_active, pushdown_reason, pushdown_result = _get_pushdown_state(
-        full_url,
-        remote_source,
-    )
+    if pushdown_enabled is False:
+        pushdown_cfg = None
+        pushdown_active = False
+        pushdown_reason = "disabled_call"
+        pushdown_result = "disabled_call"
+    else:
+        pushdown_cfg, pushdown_active, pushdown_reason, pushdown_result = _get_pushdown_state(
+            full_url,
+            remote_source,
+        )
     pushdown_safe_only = _get_pushdown_safe_only()
     pushdown_max_filters = _get_pushdown_max_filters()
     pushdown_max_in_values = _get_pushdown_max_in_values()
@@ -836,6 +843,7 @@ async def _async_iter_records_with_client(
     chunk_size: int,
     *,
     payload_filters: Filters | Dict[str, Any] | None = None,
+    pushdown_enabled: bool | None = None,
     paging_allowlist: str | None = None,
     paging_max_pages: int | None = None,
     paging_force: bool = False,
@@ -872,10 +880,16 @@ async def _async_iter_records_with_client(
     stats.setdefault("pushdown_filters_applied", 0)
     stats.setdefault("pushdown_paging_applied", False)
 
-    pushdown_cfg, pushdown_active, pushdown_reason, pushdown_result = _get_pushdown_state(
-        full_url,
-        remote_source,
-    )
+    if pushdown_enabled is False:
+        pushdown_cfg = None
+        pushdown_active = False
+        pushdown_reason = "disabled_call"
+        pushdown_result = "disabled_call"
+    else:
+        pushdown_cfg, pushdown_active, pushdown_reason, pushdown_result = _get_pushdown_state(
+            full_url,
+            remote_source,
+        )
     pushdown_safe_only = _get_pushdown_safe_only()
     pushdown_max_filters = _get_pushdown_max_filters()
     pushdown_max_in_values = _get_pushdown_max_in_values()
@@ -1045,6 +1059,7 @@ async def async_load_records(
     *,
     timeout: float = 30.0,
     payload_filters: Filters | Dict[str, Any] | None = None,
+    pushdown_enabled: bool | None = None,
     stats: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     if client is not None:
@@ -1052,6 +1067,7 @@ async def async_load_records(
             remote_source,
             client,
             payload_filters=payload_filters,
+            pushdown_enabled=pushdown_enabled,
             stats=stats,
         )
     async with httpx.AsyncClient(timeout=timeout) as async_client:
@@ -1059,6 +1075,7 @@ async def async_load_records(
             remote_source,
             async_client,
             payload_filters=payload_filters,
+            pushdown_enabled=pushdown_enabled,
             stats=stats,
         )
 
@@ -1070,6 +1087,7 @@ async def async_iter_records(
     *,
     timeout: float = 30.0,
     payload_filters: Filters | Dict[str, Any] | None = None,
+    pushdown_enabled: bool | None = None,
     paging_allowlist: str | None = None,
     paging_max_pages: int | None = None,
     paging_force: bool = False,
@@ -1081,6 +1099,7 @@ async def async_iter_records(
             client,
             chunk_size,
             payload_filters=payload_filters,
+            pushdown_enabled=pushdown_enabled,
             paging_allowlist=paging_allowlist,
             paging_max_pages=paging_max_pages,
             paging_force=paging_force,
@@ -1094,6 +1113,7 @@ async def async_iter_records(
             async_client,
             chunk_size,
             payload_filters=payload_filters,
+            pushdown_enabled=pushdown_enabled,
             paging_allowlist=paging_allowlist,
             paging_max_pages=paging_max_pages,
             paging_force=paging_force,
