@@ -138,6 +138,12 @@ REPORT_PUSHDOWN_SAFE_ONLY — разрешать pushdown только для б
 
 REPORT_PUSHDOWN_OVERRIDE — dev override для pushdown без allowlist (0/1). По умолчанию 0.
 
+CORS
+
+CORS_ALLOW_ORIGINS — список разрешённых origins через запятую.
+Если не задан — используется дефолтный список (localhost + 127.0.0.1 + 192.168.1.81).
+Если задано `*` — разрешены все origins (осторожно с `allow_credentials=true`).
+
 OTEL_ENABLED — включает OpenTelemetry tracing (0/1). По умолчанию 0.
 
 OTEL_SERVICE_NAME — имя сервиса для tracing (по умолчанию report-back-fast-api).
