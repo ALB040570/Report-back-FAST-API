@@ -73,7 +73,9 @@ UPSTREAM_BASE_URL=http://77.245.107.213
 UPSTREAM_ALLOWLIST=77.245.107.213
 REPORT_REMOTE_ALLOWLIST=77.245.107.213
 # CORS_ALLOW_ORIGINS=https://your-frontend-domain
-# ASYNC_REPORTS=0
+ASYNC_REPORTS=1
+# Для быстрых запросов фронт может добавить ?sync=1 или X-Report-Sync: 1.
+REPORT_STREAMING_ON_LIMIT=1
 
 3. Запустить контейнер
    docker rm -f report-back-fast-api 2>/dev/null || true
@@ -154,6 +156,11 @@ CORS
 CORS_ALLOW_ORIGINS — список разрешённых origins через запятую.
 Если не задан — используется дефолтный список (localhost + 127.0.0.1 + 192.168.1.81).
 Если задано `*` — разрешены все origins (осторожно с `allow_credentials=true`).
+
+Профили окружений (рекомендации)
+
+- Dev: ASYNC_REPORTS=0, REPORT_STREAMING_ON_LIMIT=0 (проще дебажить и быстрее получать ошибки).
+- Prod: ASYNC_REPORTS=1, REPORT_STREAMING_ON_LIMIT=1 (нет таймаутов, плавный fallback на streaming).
 
 OTEL_ENABLED — включает OpenTelemetry tracing (0/1). По умолчанию 0.
 
