@@ -68,6 +68,13 @@ UPSTREAM_BASE_URL=http://77.245.107.213
 UPSTREAM_TIMEOUT=30
 UPSTREAM_ALLOWLIST=77.245.107.213
 
+Пример .env.production (backend):
+UPSTREAM_BASE_URL=http://77.245.107.213
+UPSTREAM_ALLOWLIST=77.245.107.213
+REPORT_REMOTE_ALLOWLIST=77.245.107.213
+# CORS_ALLOW_ORIGINS=https://your-frontend-domain
+# ASYNC_REPORTS=0
+
 3. Запустить контейнер
    docker rm -f report-back-fast-api 2>/dev/null || true
 
