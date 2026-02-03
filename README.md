@@ -155,6 +155,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT — endpoint для OTLP exporter. Если NO_NETWO
 Async report mode (Stage 1)
 
 - Включение: ASYNC_REPORTS=1.
+- Переменная задаётся только на backend (env контейнера/процесса).
 - По умолчанию /api/report/view возвращает 202 + {job_id, status:"queued"}.
 - Принудительный синхронный режим (fallback): добавьте query `?sync=1` или заголовок `X-Report-Sync: 1`.
 - Статус/результат: GET /api/report/jobs/{job_id}.
